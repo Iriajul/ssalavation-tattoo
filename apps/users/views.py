@@ -2,13 +2,16 @@
 from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from django.core.mail import send_mail
 from django.conf import settings
 from datetime import timedelta
+from django.utils import timezone
 from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.tokens import RefreshToken, UntypedToken
 from rest_framework_simplejwt.exceptions import InvalidToken
+
+from apps.admin_api.models import Attendance, QRSession, UserWorkSchedule
 
 from .serializers import (
     AppLoginSerializer,
@@ -19,6 +22,8 @@ from .serializers import (
     AppResetPasswordSerializer,
     AppUserSerializer,
 )
+
+EMPLOYEE_ROLES = ['tattoo_artist', 'body_piercer', 'staff']
 
 User = get_user_model()
 
@@ -244,4 +249,224 @@ class AppResetPasswordView(APIView):
 
         return Response({
             "message": "Password reset successfully. Please login with your new password.",
+        }, status=status.HTTP_200_OK)
+    
+
+
+
+# ================================================================
+# APP — ATTENDANCE (Check In / Check Out)
+# ================================================================
+
+class AppCheckInView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user  = request.user
+        token = request.data.get('token')
+
+        # ── Role check ────────────────────────────────────────────
+        if user.role not in EMPLOYEE_ROLES:
+            return Response(
+                {"error": "Only employees can check in."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        # ── Token required ────────────────────────────────────────
+        if not token:
+            return Response(
+                {"error": "QR token is required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # ── Validate QR session ───────────────────────────────────
+        try:
+            qr_session = QRSession.objects.select_related('location').get(
+                token=token,
+                is_active=True
+            )
+        except QRSession.DoesNotExist:
+            return Response(
+                {"error": "Invalid or expired QR code. Please ask your manager to regenerate."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # ── Check if QR is expired ────────────────────────────────
+        if qr_session.is_expired:
+            qr_session.is_active = False
+            qr_session.save(update_fields=['is_active'])
+            return Response(
+                {"error": "QR code has expired. Please ask your manager to regenerate."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # ── Employee must belong to this location ─────────────────
+        if user.location != qr_session.location:
+            return Response(
+                {"error": "This QR code is not for your location."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        # ── Check already checked in today ────────────────────────
+        today = timezone.localdate()
+        existing = Attendance.objects.filter(user=user, date=today).first()
+
+        if existing:
+            if existing.clock_in:
+                return Response(
+                    {"error": "You have already checked in today."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+        # ── Determine status: present or late ─────────────────────
+        now          = timezone.localtime()
+        today_day    = now.strftime('%a').lower()[:3]  # 'mon', 'tue' etc
+        clock_in_time = now.time()
+
+        attendance_status = 'present'
+
+        schedule = UserWorkSchedule.objects.filter(
+            user       = user,
+            day        = today_day,
+            is_active  = True
+        ).first()
+
+        if schedule and schedule.start_time:
+            if clock_in_time > schedule.start_time:
+                attendance_status = 'late'
+
+        # ── Create attendance record ──────────────────────────────
+        attendance, _ = Attendance.objects.update_or_create(
+            user = user,
+            date = today,
+            defaults={
+                'location':   qr_session.location,
+                'qr_session': qr_session,
+                'clock_in':   clock_in_time,
+                'status':     attendance_status,
+            }
+        )
+
+        return Response({
+            "message":       "Checked in successfully.",
+            "status":        attendance_status,
+            "clock_in":      clock_in_time.strftime('%I:%M %p'),
+            "date":          str(today),
+            "location_name": qr_session.location.name,
+        }, status=status.HTTP_200_OK)
+
+
+class AppCheckOutView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user  = request.user
+        token = request.data.get('token')
+
+        # ── Role check ────────────────────────────────────────────
+        if user.role not in EMPLOYEE_ROLES:
+            return Response(
+                {"error": "Only employees can check out."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        # ── Token required ────────────────────────────────────────
+        if not token:
+            return Response(
+                {"error": "QR token is required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # ── Validate QR session ───────────────────────────────────
+        try:
+            qr_session = QRSession.objects.select_related('location').get(
+                token=token,
+                is_active=True
+            )
+        except QRSession.DoesNotExist:
+            return Response(
+                {"error": "Invalid or expired QR code. Please ask your manager to regenerate."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # ── Check if QR is expired ────────────────────────────────
+        if qr_session.is_expired:
+            qr_session.is_active = False
+            qr_session.save(update_fields=['is_active'])
+            return Response(
+                {"error": "QR code has expired. Please ask your manager to regenerate."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # ── Employee must belong to this location ─────────────────
+        if user.location != qr_session.location:
+            return Response(
+                {"error": "This QR code is not for your location."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        # ── Must have checked in first ────────────────────────────
+        today = timezone.localdate()
+        attendance = Attendance.objects.filter(
+            user=user,
+            date=today
+        ).first()
+
+        if not attendance or not attendance.clock_in:
+            return Response(
+                {"error": "You haven't checked in yet today."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # ── Already checked out ───────────────────────────────────
+        if attendance.clock_out:
+            return Response(
+                {"error": "You have already checked out today."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # ── Save checkout time ────────────────────────────────────
+        now            = timezone.localtime()
+        clock_out_time = now.time()
+
+        attendance.clock_out = clock_out_time
+        attendance.save(update_fields=['clock_out'])
+
+        return Response({
+            "message":       "Checked out successfully.",
+            "clock_in":      attendance.clock_in.strftime('%I:%M %p'),
+            "clock_out":     clock_out_time.strftime('%I:%M %p'),
+            "date":          str(today),
+            "location_name": qr_session.location.name,
+        }, status=status.HTTP_200_OK)
+
+
+class AppTodayAttendanceView(APIView):
+    """Get today's attendance status for home screen"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user  = request.user
+        today = timezone.localdate()
+
+        attendance = Attendance.objects.filter(
+            user=user,
+            date=today
+        ).first()
+
+        if not attendance:
+            return Response({
+                "date":       str(today),
+                "status":     "not_checked_in",
+                "clock_in":   None,
+                "clock_out":  None,
+                "location":   user.location.name if user.location else None,
+            }, status=status.HTTP_200_OK)
+
+        return Response({
+            "date":       str(today),
+            "status":     attendance.status if not attendance.clock_out else "checked_out",
+            "clock_in":   attendance.clock_in.strftime('%I:%M %p') if attendance.clock_in else None,
+            "clock_out":  attendance.clock_out.strftime('%I:%M %p') if attendance.clock_out else None,
+            "location":   attendance.location.name,
         }, status=status.HTTP_200_OK)

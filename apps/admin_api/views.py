@@ -6,33 +6,39 @@ from rest_framework.permissions import AllowAny
 from rest_framework.decorators import action
 from rest_framework.filters import SearchFilter
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
+from rest_framework.pagination import PageNumberPagination
 from django.core.mail import send_mail
 from django.conf import settings
 from django.utils import timezone
+from django.utils.timesince import timesince
 from datetime import timedelta
 from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.tokens import RefreshToken, UntypedToken
 from rest_framework_simplejwt.exceptions import InvalidToken
-
-from .models import Location, UserWorkSchedule, Task, Instruction
-from .permissions import IsSuperAdmin
+from rest_framework_simplejwt.token_blacklist.models import OutstandingToken, BlacklistedToken
+import secrets
+from .models import FAQ, Attendance, Location, QRSession, SplashScreen, UserWorkSchedule, Task, Instruction, ActivityLog
+from .permissions import IsBranchManager, IsSuperAdmin
 from .serializers import (
-    # Auth
+    AdminChangePasswordSerializer,
+    AdminProfileSerializer,
+    AttendanceSerializer,
     CustomTokenObtainPairSerializer,
+    FAQSerializer,
     ForgotPasswordSerializer,
+    QRSessionListSerializer,
+    QRSessionSerializer,
+    SplashScreenSerializer,
     VerifyResetOTPSerializer,
     ResetPasswordSerializer,
-    # Location
     LocationSerializer,
     LocationListSerializer,
     LocationStatsSerializer,
-    # User
     UserListSerializer,
     UserDetailSerializer,
     UserCreateSerializer,
     UserUpdateSerializer,
     UserStatsSerializer,
-    # Task
     TaskListSerializer,
     TaskDetailSerializer,
     TaskCreateSerializer,
@@ -40,7 +46,6 @@ from .serializers import (
     TaskRejectSerializer,
     TaskStatsSerializer,
     LocationEmployeeSerializer,
-    # Instruction
     InstructionSerializer,
     InstructionListSerializer,
     InstructionStatsSerializer,
@@ -271,6 +276,14 @@ class UserViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
+
+        ActivityLog.objects.create(
+            action      = 'user_added',
+            actor       = request.user,
+            target_user = user,
+            message     = f'New employee {user.get_full_name()} added to {user.location.name if user.location else "no location"}'
+        )
+
         return Response({
             'message': 'User created successfully.',
             'user':    UserDetailSerializer(user).data,
@@ -364,6 +377,15 @@ class TaskViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         task = serializer.save(created_by=request.user)
+
+        ActivityLog.objects.create(
+            action      = 'task_assigned',
+            actor       = request.user,
+            task        = task,
+            target_user = task.assigned_to,
+            message     = f'Task "{task.title}" assigned to {task.assigned_to.get_full_name()}'
+        )
+
         return Response({
             'message': 'Task created successfully.',
             'task':    TaskDetailSerializer(task).data,
@@ -407,6 +429,14 @@ class TaskViewSet(viewsets.ModelViewSet):
         task.rejection_reason = None
         task.save(update_fields=['status', 'approved_by', 'approved_at', 'rejection_reason'])
 
+        ActivityLog.objects.create(
+            action      = 'task_approved',
+            actor       = request.user,
+            task        = task,
+            target_user = task.assigned_to,
+            message     = f'Task "{task.title}" approved for {task.assigned_to.get_full_name()}'
+        )
+
         return Response({
             'message': 'Task approved successfully.',
             'task':    TaskDetailSerializer(task).data,
@@ -429,6 +459,14 @@ class TaskViewSet(viewsets.ModelViewSet):
         task.rejected_at      = timezone.now()
         task.rejection_reason = serializer.validated_data['rejection_reason']
         task.save(update_fields=['status', 'rejected_by', 'rejected_at', 'rejection_reason'])
+
+        ActivityLog.objects.create(
+            action      = 'task_rejected',
+            actor       = request.user,
+            task        = task,
+            target_user = task.assigned_to,
+            message     = f'Task "{task.title}" rejected — {serializer.validated_data["rejection_reason"]}'
+        )
 
         return Response({
             'message': 'Task rejected.',
@@ -487,12 +525,10 @@ class InstructionViewSet(viewsets.ModelViewSet):
             return InstructionListSerializer
         return InstructionSerializer
 
-
     def list(self, request, *args, **kwargs):
         queryset     = self.filter_queryset(self.get_queryset())
         all_instruct = Instruction.objects.all()
 
-        # ── Stats ────────────────────────────────────────────────
         stats = InstructionStatsSerializer({
             'total_instructions': all_instruct.count(),
             'tattoo_artists':     all_instruct.filter(role_visibility__contains='tattoo_artist').count(),
@@ -500,7 +536,6 @@ class InstructionViewSet(viewsets.ModelViewSet):
             'staff':              all_instruct.filter(role_visibility__contains='staff').count(),
         }).data
 
-        # ── Group by role for frontend sections ──────────────────
         serializer = self.get_serializer(queryset, many=True)
         all_data   = serializer.data
 
@@ -520,25 +555,18 @@ class InstructionViewSet(viewsets.ModelViewSet):
         serializer = InstructionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         instruction = serializer.save(created_by=request.user)
-
         return Response({
-            'message': 'Instruction created successfully.',
+            'message':     'Instruction created successfully.',
             'instruction': InstructionSerializer(instruction).data,
         }, status=status.HTTP_201_CREATED)
 
     def partial_update(self, request, *args, **kwargs):
         instruction = self.get_object()
-
-        serializer = InstructionSerializer(
-            instruction,
-            data=request.data,
-            partial=True
-        )
+        serializer  = InstructionSerializer(instruction, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         instruction = serializer.save()
-
         return Response({
-            'message': 'Instruction updated successfully.',
+            'message':     'Instruction updated successfully.',
             'instruction': InstructionSerializer(instruction).data,
         }, status=status.HTTP_200_OK)
 
@@ -549,3 +577,642 @@ class InstructionViewSet(viewsets.ModelViewSet):
             {"message": "Instruction deleted successfully."},
             status=status.HTTP_200_OK
         )
+
+
+# ================================================================
+# APP CONTENT
+# ================================================================
+
+class SplashScreenView(APIView):
+    permission_classes = [IsSuperAdmin]
+
+    def get(self, request):
+        obj = SplashScreen.objects.first()
+        return Response(SplashScreenSerializer(obj).data if obj else {"image_url": None})
+
+    def post(self, request):
+        image = request.FILES.get('image')
+        if not image:
+            return Response({"error": "No image provided."}, status=400)
+
+        import cloudinary.uploader
+        result = cloudinary.uploader.upload(image, folder="splash_screen")
+
+        obj, _ = SplashScreen.objects.get_or_create(id=1)
+        obj.image_url = result['secure_url']
+        obj.save()
+
+        return Response({
+            "message":   "Splash screen updated.",
+            "image_url": obj.image_url,
+        })
+
+
+class FAQViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsSuperAdmin]
+    serializer_class   = FAQSerializer
+    queryset           = FAQ.objects.all()
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        faq = serializer.save()
+        return Response({"message": "FAQ created.", "faq": FAQSerializer(faq).data}, status=201)
+
+    def update(self, request, *args, **kwargs):
+        faq        = self.get_object()
+        serializer = self.get_serializer(faq, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        faq = serializer.save()
+        return Response({"message": "FAQ updated.", "faq": FAQSerializer(faq).data})
+
+    def destroy(self, request, *args, **kwargs):
+        self.get_object().delete()
+        return Response({"message": "FAQ deleted."})
+
+
+# ================================================================
+# PROFILE
+# ================================================================
+
+class AdminProfileView(APIView):
+    permission_classes = [IsSuperAdmin]
+
+    def get(self, request):
+        return Response(AdminProfileSerializer(request.user).data)
+
+    def patch(self, request):
+        photo = request.FILES.get('profile_photo')
+        if photo:
+            import cloudinary.uploader
+            result = cloudinary.uploader.upload(photo, folder="profile_photos")
+            request.user.profile_photo = result['secure_url']
+            request.user.save(update_fields=['profile_photo'])
+            return Response({
+                "message":       "Profile photo updated.",
+                "profile_photo": request.user.profile_photo,
+            })
+        return Response({"error": "No photo provided."}, status=400)
+
+
+class AdminChangePasswordView(APIView):
+    permission_classes = [IsSuperAdmin]
+
+    def post(self, request):
+        serializer = AdminChangePasswordSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        user = request.user
+
+        if not user.check_password(serializer.validated_data['current_password']):
+            return Response(
+                {"error": "Current password is incorrect."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        user.set_password(serializer.validated_data['new_password'])
+        user.save(update_fields=['password'])
+
+        tokens = OutstandingToken.objects.filter(user=user)
+        for token in tokens:
+            BlacklistedToken.objects.get_or_create(token=token)
+
+        return Response({
+            "message": "Password updated successfully. Please login again."
+        })
+
+
+# ================================================================
+# PERFORMANCE
+# ================================================================
+
+def get_performance_status(completion_rate):
+    if completion_rate >= 90:
+        return 'Good'
+    elif completion_rate >= 75:
+        return 'Monitor'
+    return 'At Risk'
+
+
+class PerformanceAnalyticsView(APIView):
+    permission_classes = [IsSuperAdmin]
+
+    def get(self, request):
+        period = request.query_params.get('period', 'weekly')
+
+        now = timezone.now()
+        if period == 'monthly':
+            start_date     = now - timedelta(days=30)
+            days_in_period = 30
+        else:
+            start_date     = now - timedelta(days=7)
+            days_in_period = 7
+
+        employees = User.objects.filter(
+            role__in=EMPLOYEE_ROLES,
+            is_active=True
+        )
+
+        tasks_in_period = Task.objects.filter(
+            assigned_to__role__in=EMPLOYEE_ROLES,
+        )
+
+        # ── Per-employee stats ────────────────────────────────────
+        rankings = []
+        for employee in employees:
+            emp_tasks         = tasks_in_period.filter(assigned_to=employee)
+            total             = emp_tasks.count()
+            completed         = emp_tasks.filter(status__in=['completed', 'approved']).count()
+            overdue           = emp_tasks.filter(status='overdue').count()
+            completion_rate   = round((completed / total * 100)) if total > 0 else 0
+            overdue_penalty   = (overdue / total * 100) if total > 0 else 0
+            performance_score = round((completion_rate * 0.7) + ((100 - overdue_penalty) * 0.3))
+
+            # ── Per-employee attendance ───────────────────────────
+            emp_attended   = Attendance.objects.filter(
+                user       = employee,
+                date__gte  = start_date.date(),
+                status__in = ['present', 'late']
+            ).count()
+            emp_attendance = round((emp_attended / days_in_period * 100)) if days_in_period > 0 else 0
+
+            rankings.append({
+                'user':               employee,
+                'tasks_completed':    completed,
+                'total_tasks':        total,
+                'overdue':            overdue,
+                'completion_rate':    completion_rate,
+                'performance_score':  performance_score,
+                'attendance':         emp_attendance,
+                'status':             get_performance_status(completion_rate),
+            })
+
+        rankings.sort(key=lambda x: x['performance_score'], reverse=True)
+
+        # ── Top performer ─────────────────────────────────────────
+        top_performer = None
+        if rankings:
+            top = rankings[0]
+            top_performer = {
+                'id':                top['user'].id,
+                'name':              f"{top['user'].first_name} {top['user'].last_name}".strip(),
+                'email':             top['user'].email,
+                'performance_score': top['performance_score'],
+                'tasks_completed':   top['tasks_completed'],
+                'completion_rate':   top['completion_rate'],
+                'attendance':        top['attendance'],
+            }
+
+        total_completed = sum(r['tasks_completed'] for r in rankings)
+        avg_completion  = round(sum(r['completion_rate'] for r in rankings) / len(rankings)) if rankings else 0
+
+        # ── Avg attendance rate ───────────────────────────────────
+        total_emp      = employees.count()
+        total_attended = Attendance.objects.filter(
+            user__in   = employees,
+            date__gte  = start_date.date(),
+            status__in = ['present', 'late']
+        ).count()
+        max_possible     = total_emp * days_in_period
+        avg_attendance   = round((total_attended / max_possible * 100)) if max_possible > 0 else 0
+
+        # ── Build ranked list ─────────────────────────────────────
+        ranked_list = []
+        for i, r in enumerate(rankings, start=1):
+            ranked_list.append({
+                'rank':               i,
+                'id':                 r['user'].id,
+                'name':               f"{r['user'].first_name} {r['user'].last_name}".strip(),
+                'email':              r['user'].email,
+                'tasks_completed':    r['tasks_completed'],
+                'overdue':            r['overdue'],
+                'completion_rate':    r['completion_rate'],
+                'performance_score':  r['performance_score'],
+                'attendance':         r['attendance'],
+                'status':             r['status'],
+            })
+
+        paginator      = PageNumberPagination()
+        page           = paginator.paginate_queryset(ranked_list, request)
+        paginated_data = paginator.get_paginated_response(page).data
+
+        return Response({
+            'period': period,
+            'stats': {
+                'avg_completion_rate':   avg_completion,
+                'avg_attendance_rate':   avg_attendance,
+                'total_tasks_completed': total_completed,
+                'active_employees':      employees.count(),
+            },
+            'top_performer': top_performer,
+            'rankings':      paginated_data,
+        })
+
+
+# ================================================================
+# REPORTS
+# ================================================================
+
+class ReportsAnalyticsView(APIView):
+    permission_classes = [IsSuperAdmin]
+
+    def get(self, request):
+        period          = request.query_params.get('period', 'weekly')
+        location_filter = request.query_params.get('location')
+        user_filter     = request.query_params.get('user')
+
+        now = timezone.now()
+        if period == 'monthly':
+            start_date     = now - timedelta(days=30)
+            days_in_period = 30
+        else:
+            start_date     = now - timedelta(days=7)
+            days_in_period = 7
+
+        # ── Tasks ─────────────────────────────────────────────────
+        tasks = Task.objects.filter(created_at__gte=start_date)
+        if location_filter:
+            tasks = tasks.filter(location_id=location_filter)
+        if user_filter:
+            tasks = tasks.filter(assigned_to_id=user_filter)
+
+        total_tasks     = tasks.count()
+        completed_tasks = tasks.filter(status__in=['completed', 'approved']).count()
+        pending_tasks   = tasks.filter(status='pending').count()
+        completion_rate = round((completed_tasks / total_tasks * 100)) if total_tasks > 0 else 0
+        active_staff    = User.objects.filter(role__in=EMPLOYEE_ROLES, is_active=True).count()
+
+        # ── Avg attendance rate ───────────────────────────────────
+        total_employees = User.objects.filter(role__in=EMPLOYEE_ROLES, is_active=True).count()
+        total_attended  = Attendance.objects.filter(
+            date__gte  = start_date.date(),
+            status__in = ['present', 'late']
+        ).count()
+        max_possible    = total_employees * days_in_period
+        avg_attendance  = round((total_attended / max_possible * 100)) if max_possible > 0 else 0
+
+        # ── Attendance trend chart ────────────────────────────────
+        attendance_trend = []
+        for i in range(6, -1, -1):
+            day         = (now - timedelta(days=i)).date()
+            day_records = Attendance.objects.filter(date=day)
+            attendance_trend.append({
+                'date':    day.strftime('%b %d'),
+                'present': day_records.filter(status='present').count(),
+                'late':    day_records.filter(status='late').count(),
+                'absent':  day_records.filter(status='absent').count(),
+            })
+
+        # ── Weekly task completion chart ──────────────────────────
+        weekly_chart = []
+        for i in range(6, -1, -1):
+            day       = (now - timedelta(days=i)).date()
+            day_tasks = tasks.filter(created_at__date=day)
+            weekly_chart.append({
+                'date':      day.strftime('%b %d'),
+                'approved':  day_tasks.filter(status='approved').count(),
+                'completed': day_tasks.filter(status='completed').count(),
+                'pending':   day_tasks.filter(status='pending').count(),
+            })
+
+        # ── By location ───────────────────────────────────────────
+        locations              = Location.objects.filter(status='active')
+        task_by_location       = []
+        attendance_by_location = []
+
+        for loc in locations:
+            # Task completion by location
+            loc_tasks     = tasks.filter(location=loc)
+            loc_total     = loc_tasks.count()
+            loc_completed = loc_tasks.filter(status__in=['completed', 'approved']).count()
+            loc_rate      = round((loc_completed / loc_total * 100)) if loc_total > 0 else 0
+            task_by_location.append({
+                'location_id':     loc.id,
+                'location_name':   loc.name,
+                'total_tasks':     loc_total,
+                'completed':       loc_completed,
+                'completion_rate': loc_rate,
+            })
+
+            # Attendance by location
+            loc_employees   = User.objects.filter(
+                location   = loc,
+                role__in   = EMPLOYEE_ROLES,
+                is_active  = True
+            ).count()
+            loc_attended    = Attendance.objects.filter(
+                location   = loc,
+                date__gte  = start_date.date(),
+                status__in = ['present', 'late']
+            ).count()
+            loc_max         = loc_employees * days_in_period
+            loc_att_rate    = round((loc_attended / loc_max * 100)) if loc_max > 0 else 0
+            attendance_by_location.append({
+                'location_id':     loc.id,
+                'location_name':   loc.name,
+                'staff_count':     loc_employees,
+                'attendance_rate': loc_att_rate,
+            })
+
+        task_by_location.sort(key=lambda x: x['completion_rate'], reverse=True)
+        attendance_by_location.sort(key=lambda x: x['attendance_rate'], reverse=True)
+
+        # ── Attendance log — grouped by date ─────────────────────────
+        from django.db.models import Count, Q
+
+        attendance_by_date = []
+
+        # Get last 7 days
+        for i in range(6, -1, -1):
+            day = (now - timedelta(days=i)).date()
+
+            day_records = Attendance.objects.filter(date=day)
+            if location_filter:
+                day_records = day_records.filter(location_id=location_filter)
+            if user_filter:
+                day_records = day_records.filter(user_id=user_filter)
+
+            total_present = day_records.filter(status='present').count()
+            total_absent  = day_records.filter(status='absent').count()
+            total_late    = day_records.filter(status='late').count()
+            total         = total_present + total_absent + total_late
+
+            rate = round((total_present + total_late) / total * 100) if total > 0 else 0
+
+            # Label today
+            label = day.strftime('%b %d, %Y')
+            if day == now.date():
+                label += ' (Today)'
+
+            attendance_by_date.append({
+                'date':     label,
+                'raw_date': str(day),
+                'location': 'All Locations' if not location_filter else Location.objects.filter(id=location_filter).first().name if Location.objects.filter(id=location_filter).exists() else 'All Locations',
+                'present':  total_present,
+                'absent':   total_absent,
+                'late':     total_late,
+                'rate':     f"{rate}%",
+            })
+        return Response({
+            'period': period,
+            'stats': {
+                'avg_attendance_rate':  avg_attendance,
+                'task_completion_rate': completion_rate,
+                'total_active_staff':   active_staff,
+                'pending_tasks':        pending_tasks,
+            },
+            'attendance_trend':            attendance_trend,
+            'weekly_task_completion':      weekly_chart,
+            'attendance_by_location':      attendance_by_location,
+            'task_completion_by_location': task_by_location,
+            'attendance_log':              attendance_by_date, 
+        })
+
+
+# ================================================================
+# DASHBOARD
+# ================================================================
+
+class DashboardView(APIView):
+    permission_classes = [IsSuperAdmin]
+
+    def get(self, request):
+        today = timezone.localdate()
+        now   = timezone.now()
+
+        # ── Stat cards ────────────────────────────────────────────
+        total_employees  = User.objects.filter(
+            role__in=EMPLOYEE_ROLES, is_active=True
+        ).count()
+        total_locations  = Location.objects.filter(status='active').count()
+        all_tasks        = Task.objects.all()
+        pending_tasks    = all_tasks.filter(status='pending').count()
+        approved_tasks   = all_tasks.filter(status='approved').count()
+        rejected_tasks   = all_tasks.filter(status='rejected').count()
+        total_count      = all_tasks.count()
+
+        # ── Today's attendance % ──────────────────────────────────
+        checked_in_today = Attendance.objects.filter(date=today).count()
+        today_attendance = round((checked_in_today / total_employees * 100)) if total_employees > 0 else 0
+
+        # ── Attendance overview — last 7 days ─────────────────────
+        attendance_overview = []
+        for i in range(6, -1, -1):
+            day         = (now - timedelta(days=i)).date()
+            day_records = Attendance.objects.filter(date=day)
+            attendance_overview.append({
+                'date':    day.strftime('%b %d'),
+                'present': day_records.filter(status='present').count(),
+                'late':    day_records.filter(status='late').count(),
+                'absent':  day_records.filter(status='absent').count(),
+            })
+
+        # ── Task status ───────────────────────────────────────────
+        task_status = {
+            'total':    total_count,
+            'pending':  pending_tasks,
+            'approved': approved_tasks,
+            'rejected': rejected_tasks,
+        }
+
+        # ── Task status by location ───────────────────────────────
+        locations        = Location.objects.filter(status='active')
+        task_by_location = []
+        for loc in locations:
+            loc_tasks = all_tasks.filter(location=loc)
+            task_by_location.append({
+                'location_id':   loc.id,
+                'location_name': loc.name,
+                'pending':       loc_tasks.filter(status='pending').count(),
+                'approved':      loc_tasks.filter(status='approved').count(),
+                'rejected':      loc_tasks.filter(status='rejected').count(),
+            })
+
+        # ── Recent activity ───────────────────────────────────────
+        recent_logs     = ActivityLog.objects.select_related(
+            'actor', 'target_user', 'task'
+        )[:10]
+
+        recent_activity = []
+        for log in recent_logs:
+            recent_activity.append({
+                'id':         log.id,
+                'action':     log.action,
+                'message':    log.message,
+                'time_ago':   timesince(log.created_at) + ' ago',
+                'created_at': log.created_at,
+            })
+
+        return Response({
+            'stats': {
+                'total_employees':  total_employees,
+                'total_locations':  total_locations,
+                'pending_tasks':    pending_tasks,
+                'today_attendance': today_attendance,
+            },
+            'attendance_overview': attendance_overview,
+            'task_status':         task_status,
+            'task_by_location':    task_by_location,
+            'recent_activity':     recent_activity,
+        })
+
+
+# ================================================================
+# BRANCH MANAGER — QR ATTENDANCE
+# ================================================================
+
+def generate_qr_token():
+    return secrets.token_urlsafe(32)
+
+
+def deactivate_old_qr_sessions(location):
+    QRSession.objects.filter(
+        location=location,
+        is_active=True
+    ).update(is_active=False)
+
+
+class QRGenerateView(APIView):
+    permission_classes = [IsBranchManager]
+
+    def post(self, request):
+        manager = request.user
+
+        if not manager.location:
+            return Response(
+                {"error": "You are not assigned to any location."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        refresh_interval = int(request.data.get('refresh_interval', 3))
+        valid_intervals  = [1, 3, 5, 10, 30]
+
+        if refresh_interval not in valid_intervals:
+            return Response(
+                {"error": f"Invalid interval. Choose from {valid_intervals}"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        deactivate_old_qr_sessions(manager.location)
+
+        qr_session = QRSession.objects.create(
+            location         = manager.location,
+            created_by       = manager,
+            token            = generate_qr_token(),
+            refresh_interval = refresh_interval,
+            expires_at       = timezone.now() + timedelta(minutes=refresh_interval),
+            is_active        = True,
+        )
+
+        return Response({
+            "message":    "QR session generated successfully.",
+            "qr_session": QRSessionSerializer(qr_session).data,
+        }, status=status.HTTP_201_CREATED)
+
+
+class QRCurrentView(APIView):
+    permission_classes = [IsBranchManager]
+
+    def get(self, request):
+        manager = request.user
+
+        if not manager.location:
+            return Response(
+                {"error": "You are not assigned to any location."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        qr_session = QRSession.objects.filter(
+            location=manager.location,
+            is_active=True
+        ).first()
+
+        if not qr_session:
+            return Response(
+                {"message": "No active QR session. Please generate one."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        if qr_session.is_expired:
+            qr_session.is_active = False
+            qr_session.save(update_fields=['is_active'])
+            return Response(
+                {"message": "QR session has expired. Please regenerate."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        return Response({
+            "qr_session":   QRSessionSerializer(qr_session).data,
+            "seconds_left": max(
+                0,
+                int((qr_session.expires_at - timezone.now()).total_seconds())
+            ),
+        }, status=status.HTTP_200_OK)
+
+
+class QRHistoryView(APIView):
+    permission_classes = [IsBranchManager]
+
+    def get(self, request):
+        manager = request.user
+
+        if not manager.location:
+            return Response(
+                {"error": "You are not assigned to any location."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        sessions       = QRSession.objects.filter(
+            location=manager.location
+        ).order_by('-created_at')
+
+        paginator      = PageNumberPagination()
+        page           = paginator.paginate_queryset(sessions, request)
+        serializer     = QRSessionListSerializer(page, many=True)
+        paginated_data = paginator.get_paginated_response(serializer.data).data
+
+        return Response({
+            "location": manager.location.name,
+            "history":  paginated_data,
+        }, status=status.HTTP_200_OK)
+
+
+class QRSessionDetailView(APIView):
+    permission_classes = [IsBranchManager]
+
+    def get(self, request, pk):
+        manager = request.user
+
+        try:
+            qr_session = QRSession.objects.get(
+                pk=pk,
+                location=manager.location
+            )
+        except QRSession.DoesNotExist:
+            return Response(
+                {"error": "QR session not found."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        attendances = Attendance.objects.filter(
+            qr_session=qr_session
+        ).select_related('user', 'location')
+
+        return Response({
+            "qr_session":  QRSessionSerializer(qr_session).data,
+            "attendances": AttendanceSerializer(attendances, many=True).data,
+        }, status=status.HTTP_200_OK)
+
+
+class QRIntervalListView(APIView):
+    permission_classes = [IsBranchManager]
+
+    def get(self, request):
+        intervals = [
+            {"value": 1,  "label": "Every 1 minute"},
+            {"value": 3,  "label": "Every 3 minutes"},
+            {"value": 5,  "label": "Every 5 minutes"},
+            {"value": 10, "label": "Every 10 minutes"},
+            {"value": 30, "label": "Every 30 minutes"},
+        ]
+        return Response({"intervals": intervals}, status=status.HTTP_200_OK)

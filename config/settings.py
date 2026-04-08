@@ -22,12 +22,13 @@ ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=[
     "localhost",
     "10.10.13.10",
     "salvation-tattoo-jvai-1v2ivgj9x.vercel.app",
+    "8xc6kb06-8000.inc1.devtunnels.ms",   # ✅ ADD THIS
 ])
 
 CSRF_TRUSTED_ORIGINS = [
     "https://hirenearbylocals.com",
     "https://www.hirenearbylocals.com",
-    "https://ffm803lb-8000.inc1.devtunnels.ms",
+    "https://8xc6kb06-8000.inc1.devtunnels.ms",
     "https://salvation-tattoo-jvai-1v2ivgj9x.vercel.app",
 ]
 
@@ -148,7 +149,7 @@ SIMPLE_JWT = {
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
-    "https://ffm803lb-8000.inc1.devtunnels.ms",
+    "https://8xc6kb06-8000.inc1.devtunnels.ms",
     "https://salvation-tattoo-jvai-1v2ivgj9x.vercel.app", 
 ]
 
@@ -190,5 +191,17 @@ CLOUDINARY_STORAGE = {
     "API_KEY": env("CLOUDINARY_API_KEY"),
     "API_SECRET": env("CLOUDINARY_API_SECRET"),
 }
+
+REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": (
+        "rest_framework_simplejwt.authentication.JWTAuthentication",
+    ),
+    "DEFAULT_PERMISSION_CLASSES": (
+        "rest_framework.permissions.IsAuthenticated",
+    ),
+    "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination", 
+    "PAGE_SIZE": 5,  
+}
+
 
 DEFAULT_FILE_STORAGE = "cloudinary_storage.storage.MediaCloudinaryStorage"

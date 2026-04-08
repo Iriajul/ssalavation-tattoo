@@ -20,6 +20,8 @@ class User(AbstractUser):
     email     = models.EmailField(unique=True, blank=False, null=False)
     role      = models.CharField(max_length=20, choices=ROLE_CHOICES, default='staff')
     phone     = models.CharField(max_length=20, blank=True, null=True)
+    profile_photo = models.URLField(blank=True, null=True)
+    last_login_at = models.DateTimeField(blank=True, null=True)
     is_active = models.BooleanField(default=True)
 
     # Location assignment

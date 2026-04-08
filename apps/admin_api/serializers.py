@@ -3,7 +3,7 @@ from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
-from .models import Location, UserWorkSchedule, Task, Instruction
+from .models import FAQ, Attendance, Location, QRSession, SplashScreen, UserWorkSchedule, Task, Instruction
 
 User = get_user_model()
 
@@ -544,4 +544,96 @@ class InstructionStatsSerializer(serializers.Serializer):
     tattoo_artists     = serializers.IntegerField()
     body_piercers      = serializers.IntegerField()
     staff              = serializers.IntegerField()
- 
+
+class SplashScreenSerializer(serializers.ModelSerializer):
+    class Meta:
+        model  = SplashScreen
+        fields = ['id', 'image_url', 'updated_at']
+
+
+class FAQSerializer(serializers.ModelSerializer):
+    class Meta:
+        model  = FAQ
+        fields = ['id', 'question', 'answer', 'created_at']
+
+
+class AdminProfileSerializer(serializers.ModelSerializer):
+    role_display = serializers.CharField(source='get_role_display', read_only=True)
+    member_since = serializers.DateTimeField(source='date_joined', format='%B %d, %Y', read_only=True)
+
+    class Meta:
+        model  = User
+        fields = [
+            'id', 'first_name','last_name', 'email',
+            'role', 'role_display', 'is_active',
+            'profile_photo', 'member_since', 'last_login_at',
+        ]
+
+class AdminChangePasswordSerializer(serializers.Serializer):
+    current_password = serializers.CharField(required=True)
+    new_password     = serializers.CharField(min_length=8, required=True)
+    confirm_password = serializers.CharField(min_length=8, required=True)
+
+    def validate(self, data):
+        if data['new_password'] != data['confirm_password']:
+            raise serializers.ValidationError({"confirm_password": "Passwords do not match."})
+        return data
+
+
+
+class QRSessionSerializer(serializers.ModelSerializer):
+    present_count    = serializers.IntegerField(read_only=True)
+    location_name  = serializers.CharField(source='location.name', read_only=True)
+    late_count       = serializers.IntegerField(read_only=True)
+    absent_count     = serializers.IntegerField(read_only=True)
+    is_expired       = serializers.BooleanField(read_only=True)
+    interval_display = serializers.CharField(
+        source='get_refresh_interval_display', read_only=True
+    )
+
+    class Meta:
+        model  = QRSession
+        fields = [
+            'id', 'token', 'location', 'location_name', 'refresh_interval',
+            'interval_display', 'expires_at', 'is_active',
+            'is_expired', 'present_count', 'late_count',
+            'absent_count', 'created_at',
+        ]
+
+
+class QRSessionListSerializer(serializers.ModelSerializer):
+    """Lightweight for QR history list"""
+    present_count    = serializers.IntegerField(read_only=True)
+    late_count       = serializers.IntegerField(read_only=True)
+    absent_count     = serializers.IntegerField(read_only=True)
+    interval_display = serializers.CharField(
+        source='get_refresh_interval_display', read_only=True
+    )
+
+    class Meta:
+        model  = QRSession
+        fields = [
+            'id', 'token', 'refresh_interval', 'interval_display',
+            'expires_at', 'is_active', 'present_count',
+            'late_count', 'absent_count', 'created_at',
+        ]
+
+
+class AttendanceSerializer(serializers.ModelSerializer):
+    employee_name  = serializers.SerializerMethodField()
+    employee_email = serializers.CharField(source='user.email', read_only=True)
+    employee_role  = serializers.CharField(
+        source='user.get_role_display', read_only=True
+    )
+    location_name  = serializers.CharField(source='location.name', read_only=True)
+
+    class Meta:
+        model  = Attendance
+        fields = [
+            'id', 'employee_name', 'employee_email', 'employee_role',
+            'location_name', 'date', 'status',
+            'clock_in', 'clock_out', 'created_at',
+        ]
+
+    def get_employee_name(self, obj):
+        return f"{obj.user.first_name} {obj.user.last_name}".strip()

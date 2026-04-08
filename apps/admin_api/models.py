@@ -1,6 +1,7 @@
 # apps/admin_api/models.py
 from django.db import models
 from django.conf import settings
+from django.utils import timezone 
 
 
 # ================================================================
@@ -207,3 +208,160 @@ class Instruction(models.Model):
     def __str__(self):
         return self.title
  
+
+class SplashScreen(models.Model):
+    image_url  = models.URLField(blank=True, null=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'splash_screen'
+
+    def __str__(self):
+        return "Splash Screen"
+
+
+class FAQ(models.Model):
+    question   = models.CharField(max_length=500)
+    answer     = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'faqs'
+        ordering = ['created_at']
+
+    def __str__(self):
+        return self.question
+    
+
+class ActivityLog(models.Model):
+
+    ACTION_CHOICES = (
+        ('task_completed', 'Task Completed'),
+        ('task_assigned',  'Task Assigned'),
+        ('task_approved',  'Task Approved'),
+        ('task_rejected',  'Task Rejected'),
+        ('task_overdue',   'Task Overdue'),
+        ('user_added',     'User Added'),
+    )
+
+    action       = models.CharField(max_length=30, choices=ACTION_CHOICES)
+    actor        = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='activity_logs'
+    )
+    target_user  = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='targeted_logs'
+    )
+    task         = models.ForeignKey(
+        'Task',
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='activity_logs'
+    )
+    message      = models.CharField(max_length=500)
+    created_at   = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'activity_logs'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return self.message
+
+
+
+class QRSession(models.Model):
+
+    INTERVAL_CHOICES = (
+        (1,  'Every 1 minute'),
+        (3,  'Every 3 minutes'),
+        (5,  'Every 5 minutes'),
+        (10, 'Every 10 minutes'),
+        (30, 'Every 30 minutes'),
+    )
+
+    location         = models.ForeignKey(
+        Location,
+        on_delete=models.CASCADE,
+        related_name='qr_sessions'
+    )
+    created_by       = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='qr_sessions'
+    )
+    token            = models.CharField(max_length=64, unique=True)
+    refresh_interval = models.IntegerField(choices=INTERVAL_CHOICES, default=3)
+    expires_at       = models.DateTimeField()
+    is_active        = models.BooleanField(default=True)
+    created_at       = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'qr_sessions'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"QR - {self.location.name} - {self.created_at}"
+
+    @property
+    def is_expired(self):
+        return timezone.now() > self.expires_at
+
+    @property
+    def present_count(self):
+        return self.attendances.filter(status='present').count()
+
+    @property
+    def late_count(self):
+        return self.attendances.filter(status='late').count()
+
+    @property
+    def absent_count(self):
+        return self.attendances.filter(status='absent').count()
+
+
+class Attendance(models.Model):
+
+    STATUS_CHOICES = (
+        ('present', 'Present'),
+        ('late',    'Late'),
+        ('absent',  'Absent'),
+    )
+
+    user       = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='attendances'
+    )
+    location   = models.ForeignKey(
+        Location,
+        on_delete=models.CASCADE,
+        related_name='attendances'
+    )
+    qr_session = models.ForeignKey(
+        QRSession,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='attendances'
+    )
+    date       = models.DateField()
+    status     = models.CharField(max_length=10, choices=STATUS_CHOICES)
+    clock_in   = models.TimeField(null=True, blank=True)
+    clock_out  = models.TimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table        = 'attendances'
+        unique_together = ('user', 'date')
+        ordering        = ['-date']
+
+    def __str__(self):
+        return f"{self.user.email} - {self.date} - {self.status}"

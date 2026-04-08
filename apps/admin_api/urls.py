@@ -2,8 +2,17 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from .views import (
+    AdminChangePasswordView,
     AdminLoginView,
+    AdminProfileView,
+    DashboardView,
+    FAQViewSet,
     ForgotPasswordView,
+    PerformanceAnalyticsView,
+    QRIntervalListView,
+    QRSessionDetailView,
+    ReportsAnalyticsView,
+    SplashScreenView,
     VerifyResetOTPView,
     ResetPasswordView,
     LocationViewSet,
@@ -11,6 +20,9 @@ from .views import (
     TaskViewSet,
     LocationEmployeesView,
     InstructionViewSet,
+    QRHistoryView,
+    QRCurrentView,
+    QRGenerateView,
 )
 
 router = DefaultRouter()
@@ -18,6 +30,7 @@ router.register(r'locations',    LocationViewSet,    basename='location')
 router.register(r'users',        UserViewSet,        basename='user')
 router.register(r'tasks',        TaskViewSet,        basename='task')
 router.register(r'instructions', InstructionViewSet, basename='instruction')
+router.register('app-content/faqs', FAQViewSet, basename='faqs')
 
 urlpatterns = [
     # ── Auth ──────────────────────────────────────────────────────
@@ -25,8 +38,19 @@ urlpatterns = [
     path('forgot-password/', ForgotPasswordView.as_view(), name='forgot-password'),
     path('verify-otp/',      VerifyResetOTPView.as_view(), name='verify-otp'),
     path('reset-password/',  ResetPasswordView.as_view(),  name='reset-password'),
-
+    path('profile/',          AdminProfileView.as_view(),        name='admin-profile'),
+    path('profile/password/', AdminChangePasswordView.as_view(), name='admin-change-password'),
+    path('performance/', PerformanceAnalyticsView.as_view(), name='performance-analytics'),
+    path('reports/', ReportsAnalyticsView.as_view(), name='reports-analytics'),
+    path('dashboard/', DashboardView.as_view(), name='dashboard'),
+    # ── Branch Manager — QR Attendance ────────────────────────────
+    path('manager/qr/generate/',        QRGenerateView.as_view(),      name='qr-generate'),
+    path('manager/qr/current/',         QRCurrentView.as_view(),       name='qr-current'),
+    path('manager/qr/history/',         QRHistoryView.as_view(),       name='qr-history'),
+    path('manager/qr/<int:pk>/details/', QRSessionDetailView.as_view(), name='qr-details'),
+    path('manager/qr/intervals/', QRIntervalListView.as_view(), name='qr-intervals'),
     # ── Employees by location ─────────────────────────────────────
     path('locations/<int:pk>/employees/', LocationEmployeesView.as_view(), name='location-employees'),
+    path('app-content/splash-screen/', SplashScreenView.as_view(), name='splash-screen'),
 
 ] + router.urls

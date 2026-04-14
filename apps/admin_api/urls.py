@@ -5,6 +5,8 @@ from .views import (
     AdminChangePasswordView,
     AdminLoginView,
     AdminProfileView,
+    BranchManagerTaskViewSet,
+    BranchManagerVerificationView,
     DashboardView,
     FAQViewSet,
     ForgotPasswordView,
@@ -13,6 +15,7 @@ from .views import (
     QRSessionDetailView,
     ReportsAnalyticsView,
     SplashScreenView,
+    UserAttendanceView,
     VerifyResetOTPView,
     ResetPasswordView,
     LocationViewSet,
@@ -23,6 +26,7 @@ from .views import (
     QRHistoryView,
     QRCurrentView,
     QRGenerateView,
+    BranchManagerLocationEmployeesView,
 )
 
 router = DefaultRouter()
@@ -31,6 +35,7 @@ router.register(r'users',        UserViewSet,        basename='user')
 router.register(r'tasks',        TaskViewSet,        basename='task')
 router.register(r'instructions', InstructionViewSet, basename='instruction')
 router.register('app-content/faqs', FAQViewSet, basename='faqs')
+router.register('manager/tasks', BranchManagerTaskViewSet, basename='manager-tasks')
 
 urlpatterns = [
     # ── Auth ──────────────────────────────────────────────────────
@@ -49,6 +54,9 @@ urlpatterns = [
     path('manager/qr/history/',         QRHistoryView.as_view(),       name='qr-history'),
     path('manager/qr/<int:pk>/details/', QRSessionDetailView.as_view(), name='qr-details'),
     path('manager/qr/intervals/', QRIntervalListView.as_view(), name='qr-intervals'),
+    path('manager/employees/', BranchManagerLocationEmployeesView.as_view(), name='manager-employees'),
+    path('manager/verifications/', BranchManagerVerificationView.as_view(), name='manager-verifications'),
+    path('users-attendance/', UserAttendanceView.as_view(), name='users-attendance'),
     # ── Employees by location ─────────────────────────────────────
     path('locations/<int:pk>/employees/', LocationEmployeesView.as_view(), name='location-employees'),
     path('app-content/splash-screen/', SplashScreenView.as_view(), name='splash-screen'),

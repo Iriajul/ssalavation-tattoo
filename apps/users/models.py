@@ -23,6 +23,7 @@ class User(AbstractUser):
     profile_photo = models.URLField(blank=True, null=True)
     last_login_at = models.DateTimeField(blank=True, null=True)
     is_active = models.BooleanField(default=True)
+    is_suspended = models.BooleanField(default=False)
 
     # Location assignment
     location = models.ForeignKey(

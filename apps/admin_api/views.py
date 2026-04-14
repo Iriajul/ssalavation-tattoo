@@ -17,12 +17,14 @@ from rest_framework_simplejwt.tokens import RefreshToken, UntypedToken
 from rest_framework_simplejwt.exceptions import InvalidToken
 from rest_framework_simplejwt.token_blacklist.models import OutstandingToken, BlacklistedToken
 import secrets
+from django.db.models import Prefetch
 from .models import FAQ, Attendance, Location, QRSession, SplashScreen, UserWorkSchedule, Task, Instruction, ActivityLog
 from .permissions import IsBranchManager, IsSuperAdmin
 from .serializers import (
     AdminChangePasswordSerializer,
     AdminProfileSerializer,
     AttendanceSerializer,
+    BranchManagerTaskCreateSerializer,
     CustomTokenObtainPairSerializer,
     FAQSerializer,
     ForgotPasswordSerializer,
@@ -298,7 +300,22 @@ class UserViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(user, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
-        user = User.objects.prefetch_related('work_schedules').get(pk=user.pk)
+
+        # ── Re-fetch with only the sent days to avoid stale cache ─
+        sent_days = [
+            s['day'] for s in request.data.get('work_schedules', [])
+        ] if 'work_schedules' in request.data else None
+
+        schedule_qs = (
+            UserWorkSchedule.objects.filter(day__in=sent_days)
+            if sent_days is not None
+            else UserWorkSchedule.objects.none()
+        )
+
+        user = User.objects.prefetch_related(
+            Prefetch('work_schedules', queryset=schedule_qs)
+        ).get(pk=user.pk)
+
         return Response({
             'message': 'User updated successfully.',
             'user':    UserDetailSerializer(user).data,
@@ -312,6 +329,59 @@ class UserViewSet(viewsets.ModelViewSet):
             status=status.HTTP_200_OK
         )
 
+    # ── Suspend ───────────────────────────────────────────────────
+    @action(detail=True, methods=['post'], url_path='suspend')
+    def suspend(self, request, pk=None):
+        user = self.get_object()
+
+        if user.is_suspended:
+            return Response(
+                {"error": "User is already suspended."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        user.is_suspended = True
+        user.is_active    = False
+        user.save(update_fields=['is_suspended', 'is_active'])
+
+        ActivityLog.objects.create(
+            action      = 'user_suspended',
+            actor       = request.user,
+            target_user = user,
+            message     = f'{user.get_full_name()} has been suspended by {request.user.get_full_name()}'
+        )
+
+        return Response({
+            "message": f"{user.get_full_name()} has been suspended.",
+            "user":    UserDetailSerializer(user).data,
+        }, status=status.HTTP_200_OK)
+
+    # ── Activate ──────────────────────────────────────────────────
+    @action(detail=True, methods=['post'], url_path='activate')
+    def activate(self, request, pk=None):
+        user = self.get_object()
+
+        if user.is_active and not user.is_suspended:
+            return Response(
+                {"error": "User is already active."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        user.is_suspended = False
+        user.is_active    = True
+        user.save(update_fields=['is_suspended', 'is_active'])
+
+        ActivityLog.objects.create(
+            action      = 'user_activated',
+            actor       = request.user,
+            target_user = user,
+            message     = f'{user.get_full_name()} has been activated by {request.user.get_full_name()}'
+        )
+
+        return Response({
+            "message": f"{user.get_full_name()} has been activated.",
+            "user":    UserDetailSerializer(user).data,
+        }, status=status.HTTP_200_OK)
 
 # ================================================================
 # TASK VIEWSET
@@ -506,70 +576,169 @@ class LocationEmployeesView(APIView):
 # ================================================================
 # INSTRUCTION VIEWSET
 # ================================================================
-
+ 
 class InstructionViewSet(viewsets.ModelViewSet):
     permission_classes = [IsSuperAdmin]
     filter_backends    = [SearchFilter]
     search_fields      = ['title', 'description']
     parser_classes     = [MultiPartParser, FormParser, JSONParser]
-
+ 
     def get_queryset(self):
         queryset    = Instruction.objects.all().order_by('-created_at')
         role_filter = self.request.query_params.get('role')
-        if role_filter:
+        if role_filter and role_filter != 'all':
             queryset = queryset.filter(role_visibility__contains=role_filter)
         return queryset
-
+ 
     def get_serializer_class(self):
         if self.action == 'list':
             return InstructionListSerializer
         return InstructionSerializer
-
+ 
+    def _parse_role_visibility(self, request):
+        """
+        Handles role_visibility from:
+        - form-data multiple keys: role_visibility=tattoo_artist & role_visibility=staff
+        - form-data JSON string:   role_visibility=["tattoo_artist","staff"]
+        - JSON body:               role_visibility: ["tattoo_artist","staff"]
+        """
+        import json
+        role_visibility = request.data.getlist('role_visibility')
+ 
+        if not role_visibility:
+            return []
+ 
+        if len(role_visibility) == 1:
+            try:
+                parsed = json.loads(role_visibility[0])
+                if isinstance(parsed, list):
+                    return parsed
+            except (ValueError, TypeError):
+                pass
+ 
+        return role_visibility
+ 
     def list(self, request, *args, **kwargs):
         queryset     = self.filter_queryset(self.get_queryset())
         all_instruct = Instruction.objects.all()
+        role_filter  = request.query_params.get('role')
 
+        # ── Stats (always from all instructions) ─────────────────
         stats = InstructionStatsSerializer({
             'total_instructions': all_instruct.count(),
             'tattoo_artists':     all_instruct.filter(role_visibility__contains='tattoo_artist').count(),
             'body_piercers':      all_instruct.filter(role_visibility__contains='body_piercer').count(),
             'staff':              all_instruct.filter(role_visibility__contains='staff').count(),
+            'branch_managers':    all_instruct.filter(role_visibility__contains='branch_manager').count(),
+            'district_managers':  all_instruct.filter(role_visibility__contains='district_manager').count(),
         }).data
 
         serializer = self.get_serializer(queryset, many=True)
         all_data   = serializer.data
 
-        grouped = {
-            'tattoo_artist': [i for i in all_data if 'tattoo_artist' in i['role_visibility']],
-            'body_piercer':  [i for i in all_data if 'body_piercer'  in i['role_visibility']],
-            'staff':         [i for i in all_data if 'staff'         in i['role_visibility']],
-        }
+        # ── If role filter applied — return flat filtered list ────
+        if role_filter and role_filter != 'all':
+            return Response({
+                'stats':        stats,
+                'instructions': all_data,
+            }, status=status.HTTP_200_OK)
+
+        # ── Default — return grouped by section ───────────────────
+        employee_instructions = [
+            i for i in all_data
+            if any(r in i['role_visibility'] for r in ['tattoo_artist', 'body_piercer', 'staff'])
+        ]
+        manager_instructions = [
+            i for i in all_data
+            if 'branch_manager' in i['role_visibility']
+        ]
+        district_manager_instructions = [
+            i for i in all_data
+            if 'district_manager' in i['role_visibility']
+        ]
+
+        grouped = [
+            {
+                'section':        'Employees Instructions',
+                'document_count': len(employee_instructions),
+                'instructions':   employee_instructions,
+            },
+            {
+                'section':        'Managers Instructions',
+                'document_count': len(manager_instructions),
+                'instructions':   manager_instructions,
+            },
+            {
+                'section':        'District Managers Instructions',
+                'document_count': len(district_manager_instructions),
+                'instructions':   district_manager_instructions,
+            },
+        ]
 
         return Response({
-            'stats':        stats,
-            'instructions': all_data,
-            'grouped':      grouped,
+            'stats':  stats,
+            'grouped': grouped,
         }, status=status.HTTP_200_OK)
-
+ 
     def create(self, request, *args, **kwargs):
-        serializer = InstructionSerializer(data=request.data)
+        data                   = request.data.copy()
+        data['role_visibility'] = self._parse_role_visibility(request)
+ 
+        serializer = InstructionSerializer(data=data)
         serializer.is_valid(raise_exception=True)
         instruction = serializer.save(created_by=request.user)
+ 
+        return Response({
+            'message':     'Instruction created successfully.',
+            'instruction': InstructionSerializer(instruction).data,
+        }, status=status.HTTP_201_CREATED)
+ 
+    def create(self, request, *args, **kwargs):
+        role_visibility = self._parse_role_visibility(request)
+
+        data = {
+            'title':           request.data.get('title'),
+            'description':     request.data.get('description', ''),
+            'role_visibility': role_visibility,
+        }
+
+        if 'pdf_file' in request.FILES:
+            data['pdf_file'] = request.FILES['pdf_file']
+
+        serializer = InstructionSerializer(data=data)
+        serializer.is_valid(raise_exception=True)
+        instruction = serializer.save(created_by=request.user)
+
         return Response({
             'message':     'Instruction created successfully.',
             'instruction': InstructionSerializer(instruction).data,
         }, status=status.HTTP_201_CREATED)
 
+    # ↓ REPLACE THIS METHOD
     def partial_update(self, request, *args, **kwargs):
-        instruction = self.get_object()
-        serializer  = InstructionSerializer(instruction, data=request.data, partial=True)
+        instruction     = self.get_object()
+        role_visibility = self._parse_role_visibility(request)
+
+        data = {}
+
+        if request.data.get('title'):
+            data['title'] = request.data.get('title')
+        if request.data.get('description'):
+            data['description'] = request.data.get('description')
+        if role_visibility:
+            data['role_visibility'] = role_visibility
+        if 'pdf_file' in request.FILES:
+            data['pdf_file'] = request.FILES['pdf_file']
+
+        serializer = InstructionSerializer(instruction, data=data, partial=True)
         serializer.is_valid(raise_exception=True)
         instruction = serializer.save()
+
         return Response({
             'message':     'Instruction updated successfully.',
             'instruction': InstructionSerializer(instruction).data,
         }, status=status.HTTP_200_OK)
-
+ 
     def destroy(self, request, *args, **kwargs):
         instruction = self.get_object()
         instruction.delete()
@@ -584,7 +753,7 @@ class InstructionViewSet(viewsets.ModelViewSet):
 # ================================================================
 
 class SplashScreenView(APIView):
-    permission_classes = [IsSuperAdmin]
+    permission_classes = [AllowAny]
 
     def get(self, request):
         obj = SplashScreen.objects.first()
@@ -968,7 +1137,6 @@ class ReportsAnalyticsView(APIView):
             'attendance_log':              attendance_by_date, 
         })
 
-
 # ================================================================
 # DASHBOARD
 # ================================================================
@@ -977,19 +1145,20 @@ class DashboardView(APIView):
     permission_classes = [IsSuperAdmin]
 
     def get(self, request):
-        today = timezone.localdate()
-        now   = timezone.now()
+        today           = timezone.localdate()
+        now             = timezone.now()
+        location_filter = request.query_params.get('location')
 
         # ── Stat cards ────────────────────────────────────────────
-        total_employees  = User.objects.filter(
+        total_employees = User.objects.filter(
             role__in=EMPLOYEE_ROLES, is_active=True
         ).count()
-        total_locations  = Location.objects.filter(status='active').count()
-        all_tasks        = Task.objects.all()
-        pending_tasks    = all_tasks.filter(status='pending').count()
-        approved_tasks   = all_tasks.filter(status='approved').count()
-        rejected_tasks   = all_tasks.filter(status='rejected').count()
-        total_count      = all_tasks.count()
+        total_locations = Location.objects.filter(status='active').count()
+        all_tasks       = Task.objects.all()
+        pending_tasks   = all_tasks.filter(status='pending').count()
+        approved_tasks  = all_tasks.filter(status='approved').count()
+        rejected_tasks  = all_tasks.filter(status='rejected').count()
+        total_count     = all_tasks.count()
 
         # ── Today's attendance % ──────────────────────────────────
         checked_in_today = Attendance.objects.filter(date=today).count()
@@ -1032,7 +1201,6 @@ class DashboardView(APIView):
         recent_logs     = ActivityLog.objects.select_related(
             'actor', 'target_user', 'task'
         )[:10]
-
         recent_activity = []
         for log in recent_logs:
             recent_activity.append({
@@ -1043,6 +1211,35 @@ class DashboardView(APIView):
                 'created_at': log.created_at,
             })
 
+        # ── Today's employee breakdown (paginated) ────────────────
+        employees = User.objects.filter(
+            role__in=EMPLOYEE_ROLES,
+            is_active=True
+        ).select_related('location').order_by('first_name')
+
+        if location_filter:
+            employees = employees.filter(location_id=location_filter)
+
+        employee_breakdown = []
+        for emp in employees:
+            attendance = Attendance.objects.filter(
+                user=emp,
+                date=today
+            ).first()
+
+            employee_breakdown.append({
+                'id':            emp.id,
+                'name':          f"{emp.first_name} {emp.last_name}".strip(),
+                'role_display':  emp.get_role_display(),
+                'location_name': emp.location.name if emp.location else None,
+                'today_status':  attendance.status if attendance else 'absent',
+            })
+
+        # Apply pagination to the list
+        paginator           = PageNumberPagination()
+        paginator.page_size = 5
+        paginated_page      = paginator.paginate_queryset(employee_breakdown, request)
+
         return Response({
             'stats': {
                 'total_employees':  total_employees,
@@ -1050,12 +1247,12 @@ class DashboardView(APIView):
                 'pending_tasks':    pending_tasks,
                 'today_attendance': today_attendance,
             },
-            'attendance_overview': attendance_overview,
-            'task_status':         task_status,
-            'task_by_location':    task_by_location,
-            'recent_activity':     recent_activity,
+            'attendance_overview':  attendance_overview,
+            'task_status':          task_status,
+            'task_by_location':     task_by_location,
+            'recent_activity':      recent_activity,
+            'employee_breakdown':   paginator.get_paginated_response(paginated_page).data,  # ← fix
         })
-
 
 # ================================================================
 # BRANCH MANAGER — QR ATTENDANCE
@@ -1216,3 +1413,450 @@ class QRIntervalListView(APIView):
             {"value": 30, "label": "Every 30 minutes"},
         ]
         return Response({"intervals": intervals}, status=status.HTTP_200_OK)
+    
+
+
+class BranchManagerTaskViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsBranchManager]
+    filter_backends    = [SearchFilter]
+    search_fields      = ['title', 'description', 'assigned_to__first_name', 'assigned_to__last_name']
+
+    def get_queryset(self):
+        manager  = self.request.user
+
+        # ── Only tasks for manager's location ─────────────────────
+        queryset = Task.objects.filter(
+            location=manager.location
+        ).select_related(
+            'location', 'assigned_to', 'completed_by',
+            'approved_by', 'rejected_by', 'created_by'
+        ).order_by('-created_at')
+
+        # ── Status filter ─────────────────────────────────────────
+        status_filter = self.request.query_params.get('status')
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+
+        return queryset
+
+    def get_serializer_class(self):
+        if self.action == 'create':
+            return BranchManagerTaskCreateSerializer
+        if self.action in ['update', 'partial_update']:
+            return TaskUpdateSerializer
+        if self.action == 'list':
+            return TaskListSerializer
+        return TaskDetailSerializer
+
+    def list(self, request, *args, **kwargs):
+        manager  = request.user
+        queryset = self.filter_queryset(self.get_queryset())
+
+        # ── Stats for this location only ──────────────────────────
+        location_tasks = Task.objects.filter(location=manager.location)
+        stats = {
+            'all':            location_tasks.count(),
+            'pending':        location_tasks.filter(status='pending').count(),
+            'awaiting_review': location_tasks.filter(status='completed').count(),
+            'approved':       location_tasks.filter(status='approved').count(),
+            'overdue':        location_tasks.filter(status='overdue').count(),
+        }
+
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer     = self.get_serializer(page, many=True)
+            paginated_data = self.get_paginated_response(serializer.data)
+            return Response({
+                'location': manager.location.name if manager.location else None,
+                'stats':    stats,
+                'tasks':    paginated_data.data,
+            }, status=status.HTTP_200_OK)
+
+        serializer = self.get_serializer(queryset, many=True)
+        return Response({
+            'location': manager.location.name if manager.location else None,
+            'stats':    stats,
+            'tasks':    serializer.data,
+        }, status=status.HTTP_200_OK)
+
+    def create(self, request, *args, **kwargs):
+        manager = request.user
+
+        if not manager.location:
+            return Response(
+                {"error": "You are not assigned to any location."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        # ── Validate employee belongs to manager's location ───────
+        assigned_to = serializer.validated_data.get('assigned_to')
+        if assigned_to.location != manager.location:
+            return Response(
+                {"error": "You can only assign tasks to employees in your location."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        task = serializer.save(
+            location   = manager.location,
+            created_by = request.user,
+        )
+
+        ActivityLog.objects.create(
+            action      = 'task_assigned',
+            actor       = request.user,
+            task        = task,
+            target_user = task.assigned_to,
+            message     = f'Task "{task.title}" assigned to {task.assigned_to.get_full_name()}'
+        )
+
+        return Response({
+            'message': 'Task created successfully.',
+            'task':    TaskDetailSerializer(task).data,
+        }, status=status.HTTP_201_CREATED)
+
+    def retrieve(self, request, *args, **kwargs):
+        task = self.get_object()
+        return Response(TaskDetailSerializer(task).data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'], url_path='approve')
+    def approve(self, request, pk=None):
+        task = self.get_object()
+
+        if task.status not in ['completed', 'rejected']:
+            return Response(
+                {"error": "Only completed or previously rejected tasks can be approved."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        task.status           = 'approved'
+        task.approved_by      = request.user
+        task.approved_at      = timezone.now()
+        task.rejection_reason = None
+        task.save(update_fields=['status', 'approved_by', 'approved_at', 'rejection_reason'])
+
+        ActivityLog.objects.create(
+            action      = 'task_approved',
+            actor       = request.user,
+            task        = task,
+            target_user = task.assigned_to,
+            message     = f'Task "{task.title}" approved for {task.assigned_to.get_full_name()}'
+        )
+
+        return Response({
+            'message': 'Task approved successfully.',
+            'task':    TaskDetailSerializer(task).data,
+        }, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'], url_path='reject')
+    def reject(self, request, pk=None):
+        task       = self.get_object()
+        serializer = TaskRejectSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        if task.status not in ['completed', 'approved']:
+            return Response(
+                {"error": "Only completed or approved tasks can be rejected."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        task.status           = 'rejected'
+        task.rejected_by      = request.user
+        task.rejected_at      = timezone.now()
+        task.rejection_reason = serializer.validated_data['rejection_reason']
+        task.save(update_fields=['status', 'rejected_by', 'rejected_at', 'rejection_reason'])
+
+        ActivityLog.objects.create(
+            action      = 'task_rejected',
+            actor       = request.user,
+            task        = task,
+            target_user = task.assigned_to,
+            message     = f'Task "{task.title}" rejected — {serializer.validated_data["rejection_reason"]}'
+        )
+
+        return Response({
+            'message': 'Task rejected.',
+            'task':    TaskDetailSerializer(task).data,
+        }, status=status.HTTP_200_OK)
+
+
+class BranchManagerLocationEmployeesView(APIView):
+    """Get employees for manager's location — for assign dropdown"""
+    permission_classes = [IsBranchManager]
+
+    def get(self, request):
+        manager = request.user
+
+        if not manager.location:
+            return Response(
+                {"error": "You are not assigned to any location."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        employees = User.objects.filter(
+            location  = manager.location,
+            role__in  = ASSIGNABLE_ROLES,
+            is_active = True
+        )
+
+        serializer = LocationEmployeeSerializer(employees, many=True)
+        return Response({
+            'location':  manager.location.name,
+            'location_id': manager.location.id,
+            'employees': serializer.data,
+        }, status=status.HTTP_200_OK)
+
+
+
+class BranchManagerVerificationView(APIView):
+    permission_classes = [IsBranchManager]
+
+    def get(self, request):
+        manager = request.user
+
+        if not manager.location:
+            return Response(
+                {"error": "You are not assigned to any location."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        tab = request.query_params.get('tab', 'pending')
+
+        # ── Base queryset — only this location's tasks ─────────────
+        base_tasks = Task.objects.filter(
+            location=manager.location
+        ).select_related('assigned_to', 'approved_by', 'rejected_by')
+
+        # ── Stats ──────────────────────────────────────────────────
+        stats = {
+            'awaiting_review': base_tasks.filter(status='completed').count(),
+            'approved':        base_tasks.filter(status='approved').count(),
+            'rejected':        base_tasks.filter(status='rejected').count(),
+        }
+
+        # ── Tab filter ─────────────────────────────────────────────
+        if tab == 'resolved':
+            tasks = base_tasks.filter(status__in=['approved', 'rejected'])
+        else:
+            # pending tab = awaiting review = completed by employee
+            tasks = base_tasks.filter(status='completed')
+
+        tasks = tasks.order_by('-completed_at')
+
+        # ── Paginate ───────────────────────────────────────────────
+        paginator  = PageNumberPagination()
+        page       = paginator.paginate_queryset(tasks, request)
+
+        data = []
+        for task in page:
+            data.append({
+                'id':             task.id,
+                'title':          task.title,
+                'description':    task.description,
+                'requires_photo': task.requires_photo,
+                'photo_url':      task.photo_url,
+                'status':         task.status,
+                'assigned_to': {
+                    'id':    task.assigned_to.id,
+                    'name':  f"{task.assigned_to.first_name} {task.assigned_to.last_name}".strip(),
+                    'email': task.assigned_to.email,
+                },
+                'completed_at':      task.completed_at,
+                'approved_by': f"{task.approved_by.first_name} {task.approved_by.last_name}".strip() if task.approved_by else None,
+                'approved_at':       task.approved_at,
+                'rejected_by': f"{task.rejected_by.first_name} {task.rejected_by.last_name}".strip() if task.rejected_by else None,
+                'rejected_at':       task.rejected_at,
+                'rejection_reason':  task.rejection_reason,
+            })
+
+        return Response({
+            'stats':   stats,
+            'tab':     tab,
+            'tasks':   paginator.get_paginated_response(data).data,
+        }, status=status.HTTP_200_OK)
+    
+
+
+class UserAttendanceView(APIView):
+    permission_classes = [IsSuperAdmin]
+
+    def get(self, request):
+        from django.db import models as db_models
+
+        period          = request.query_params.get('period', 'weekly')
+        location_filter = request.query_params.get('location')
+        search          = request.query_params.get('search', '').strip()
+        user_id         = request.query_params.get('user')
+
+        # ── Date range ────────────────────────────────────────────
+        now = timezone.now()
+        if period == 'yearly':
+            start_date     = now - timedelta(days=365)
+            days_in_period = 365
+            period_label   = 'year'
+        elif period == 'monthly':
+            start_date     = now - timedelta(days=30)
+            days_in_period = 30
+            period_label   = 'month'
+        else:
+            start_date     = now - timedelta(days=7)
+            days_in_period = 7
+            period_label   = 'week'
+
+        # ── Base employee queryset ────────────────────────────────
+        employees = User.objects.filter(
+            role__in  = EMPLOYEE_ROLES,
+            is_active = True
+        ).select_related('location').order_by('first_name')
+
+        if location_filter:
+            employees = employees.filter(location_id=location_filter)
+
+        if search:
+            employees = employees.filter(
+                db_models.Q(first_name__icontains=search) |
+                db_models.Q(last_name__icontains=search)  |
+                db_models.Q(email__icontains=search)
+            )
+
+        if user_id:
+            employees = employees.filter(id=user_id)
+
+        # ── Filter options for dropdowns ──────────────────────────
+        filter_options = {
+            'locations': list(
+                Location.objects.filter(status='active').values('id', 'name')
+            )
+        }
+
+        # ── Drill-down: single employee ───────────────────────────
+        if user_id or employees.count() == 1:
+            employee = employees.first()
+            if not employee:
+                return Response(
+                    {"error": "Employee not found."},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            return self._detail_view(
+                request, employee, start_date,
+                days_in_period, period, period_label,
+                filter_options, now
+            )
+
+        # ── Default: summary table ────────────────────────────────
+        return self._summary_view(
+            request, employees, start_date,
+            days_in_period, period, period_label,
+            filter_options
+        )
+
+    # ================================================================
+    # SUMMARY VIEW — all employees aggregated
+    # ================================================================
+    def _summary_view(self, request, employees, start_date, days_in_period, period, period_label, filter_options):
+        summary = []
+
+        for employee in employees:
+            records       = Attendance.objects.filter(
+                user      = employee,
+                date__gte = start_date.date()
+            )
+            total_present = records.filter(status='present').count()
+            total_late    = records.filter(status='late').count()
+            total_absent  = records.filter(status='absent').count()
+
+            summary.append({
+                'id':            employee.id,
+                'name':          f"{employee.first_name} {employee.last_name}".strip(),
+                'role':          employee.get_role_display(),
+                'location':      employee.location.name if employee.location else None,
+                'location_id':   employee.location.id   if employee.location else None,
+                'total_present': total_present,
+                'total_late':    total_late,
+                'total_absent':  total_absent,
+            })
+
+        # ── Paginate ──────────────────────────────────────────────
+        paginator      = PageNumberPagination()
+        page           = paginator.paginate_queryset(summary, request)
+        paginated_data = paginator.get_paginated_response(page).data
+
+        return Response({
+            'view':           'summary',
+            'period':         period,
+            'period_label':   period_label,
+            'employees':      paginated_data,   
+        }, status=status.HTTP_200_OK)
+
+    # ================================================================
+    # DETAIL VIEW — single employee daily breakdown
+    # ================================================================
+    def _detail_view(self, request, employee, start_date, days_in_period, period, period_label, filter_options, now):
+        records        = Attendance.objects.filter(
+            user      = employee,
+            date__gte = start_date.date()
+        ).order_by('date')
+
+        # ── Stat cards ────────────────────────────────────────────
+        total_present = records.filter(status='present').count()
+        total_late    = records.filter(status='late').count()
+        total_absent  = records.filter(status='absent').count()
+
+        # ── Count weekdays in period ──────────────────────────────
+        total_weekdays = sum(
+            1 for i in range(days_in_period)
+            if (now - timedelta(days=i)).date().weekday() < 5
+        )
+
+        # ── Build daily log ───────────────────────────────────────
+        attendance_map = {r.date: r for r in records}
+        daily_log      = []
+
+        for i in range(days_in_period - 1, -1, -1):
+            day        = (now - timedelta(days=i)).date()
+            record     = attendance_map.get(day)
+            is_weekend = day.weekday() >= 5
+
+            if is_weekend:
+                day_status = 'weekend'
+            elif record:
+                day_status = record.status
+            else:
+                day_status = 'absent'
+
+            daily_log.append({
+                'date':         str(day),
+                'date_display': day.strftime('%b %d, %Y'),
+                'role':          employee.get_role_display(),
+                'status':       day_status,
+                'location':      employee.location.name if employee.location else None,
+
+            })
+
+        # ── Paginate daily log ────────────────────────────────────
+        paginator      = PageNumberPagination()
+        page           = paginator.paginate_queryset(daily_log, request)
+        paginated_data = paginator.get_paginated_response(page).data
+
+        return Response({
+            'view':         'detail',
+            'period':       period,
+            'period_label': period_label,
+            'employee': {
+                'id':       employee.id,
+                'name':     f"{employee.first_name} {employee.last_name}".strip(),
+                'initials': f"{employee.first_name[:1]}{employee.last_name[:1]}".upper(),
+                'role':     employee.get_role_display(),
+                'location': employee.location.name if employee.location else None,
+            },
+            'stats': {
+                'total_present':  total_present,
+                'total_late':     total_late,
+                'total_absent':   total_absent,
+                'total_weekdays': total_weekdays,
+                'period_label':   period_label,
+            },
+            'attendance_log':  paginated_data,
+        }, status=status.HTTP_200_OK)

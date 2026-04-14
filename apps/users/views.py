@@ -1,5 +1,5 @@
 # apps/users/views.py
-from rest_framework import status
+from rest_framework import filters, status, viewsets
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -10,11 +10,14 @@ from django.utils import timezone
 from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.tokens import RefreshToken, UntypedToken
 from rest_framework_simplejwt.exceptions import InvalidToken
-
-from apps.admin_api.models import Attendance, QRSession, UserWorkSchedule
+from rest_framework.decorators import action
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
+from apps.admin_api.models import Attendance, QRSession, Task, UserWorkSchedule
 
 from .serializers import (
     AppLoginSerializer,
+    AppTaskDetailSerializer,
+    AppTaskListSerializer,
     VerifyLoginOTPSerializer,
     ResendLoginOTPSerializer,
     AppForgotPasswordSerializer,
@@ -469,4 +472,133 @@ class AppTodayAttendanceView(APIView):
             "clock_in":   attendance.clock_in.strftime('%I:%M %p') if attendance.clock_in else None,
             "clock_out":  attendance.clock_out.strftime('%I:%M %p') if attendance.clock_out else None,
             "location":   attendance.location.name,
+        }, status=status.HTTP_200_OK)
+
+
+
+class AppTaskViewSet(viewsets.ReadOnlyModelViewSet):
+    permission_classes = [IsAuthenticated]
+    filter_backends    = [filters.SearchFilter]
+    search_fields      = ['title', 'description']
+
+    def get_queryset(self):
+        user     = self.request.user
+        queryset = Task.objects.filter(
+            assigned_to=user
+        ).select_related(
+            'created_by', 'location',
+            'completed_by', 'approved_by', 'rejected_by'
+        ).order_by('-created_at')
+
+        # ── Status filter ─────────────────────────────────────────
+        status_filter = self.request.query_params.get('status')
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+
+        return queryset
+
+    def get_serializer_class(self):
+        if self.action == 'retrieve':
+            return AppTaskDetailSerializer
+        return AppTaskListSerializer
+
+    def list(self, request, *args, **kwargs):
+        user     = request.user
+        queryset = self.filter_queryset(self.get_queryset())
+
+        # ── Stats ─────────────────────────────────────────────────
+        all_tasks = Task.objects.filter(assigned_to=user)
+        stats = {
+            'total':    all_tasks.count(),
+            'pending':  all_tasks.filter(status='pending').count(),
+            'approved': all_tasks.filter(status='approved').count(),
+            'rejected': all_tasks.filter(status='rejected').count(),
+        }
+
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer     = self.get_serializer(page, many=True)
+            paginated_data = self.get_paginated_response(serializer.data)
+            return Response({
+                'stats': stats,
+                'tasks': paginated_data.data,
+            }, status=status.HTTP_200_OK)
+
+        serializer = self.get_serializer(queryset, many=True)
+        return Response({
+            'stats': stats,
+            'tasks': serializer.data,
+        }, status=status.HTTP_200_OK)
+
+    def retrieve(self, request, *args, **kwargs):
+        task = self.get_object()
+        return Response(
+            AppTaskDetailSerializer(task).data,
+            status=status.HTTP_200_OK
+        )
+
+    @action(
+        detail=True,
+        methods=['post'],
+        url_path='complete',
+        parser_classes=[MultiPartParser, FormParser, JSONParser]
+    )
+    def complete(self, request, pk=None):
+        task = self.get_object()
+        user = request.user
+
+        # ── Only assigned employee can complete ───────────────────
+        if task.assigned_to != user:
+            return Response(
+                {"error": "You can only complete tasks assigned to you."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        # ── Only pending or rejected tasks can be completed ───────
+        if task.status not in ['pending', 'rejected']:
+            return Response(
+                {"error": "Only pending or rejected tasks can be completed."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # ── Photo required check ──────────────────────────────────
+        if task.requires_photo:
+            photo = request.FILES.get('photo')
+            if not photo:
+                return Response(
+                    {"error": "A photo is required to complete this task."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            # ── Upload to Cloudinary ──────────────────────────────
+            import cloudinary.uploader
+            result        = cloudinary.uploader.upload(
+                photo,
+                folder='task_photos/'
+            )
+            task.photo_url = result['secure_url']
+
+        # ── Mark as completed ─────────────────────────────────────
+        task.status       = 'completed'
+        task.completed_by = user
+        task.completed_at = timezone.now()
+        task.save(update_fields=[
+            'status', 'completed_by', 'completed_at', 'photo_url'
+        ])
+
+        # ── Log activity ──────────────────────────────────────────
+        from apps.admin_api.models import ActivityLog
+        ActivityLog.objects.create(
+            action      = 'task_completed',
+            actor       = user,
+            task        = task,
+            target_user = user,
+            message     = f'{user.get_full_name()} completed "{task.title}"'
+        )
+
+        return Response({
+            "message":  "Task submitted successfully.",
+            "task_id":  task.id,
+            "title":    task.title,
+            "status":   task.status,
+            "photo_url": task.photo_url,
         }, status=status.HTTP_200_OK)

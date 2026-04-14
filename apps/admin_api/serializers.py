@@ -10,7 +10,7 @@ User = get_user_model()
 # Roles that require a weekly schedule
 SCHEDULE_ROLES = ['tattoo_artist', 'body_piercer', 'staff']
 ASSIGNABLE_ROLES = ['tattoo_artist', 'body_piercer', 'staff']
-VISIBILITY_ROLES = ['tattoo_artist', 'body_piercer', 'staff']
+VISIBILITY_ROLES = ['tattoo_artist', 'body_piercer', 'staff', 'district_manager', 'branch_manager']
 
 # ================================================================
 # AUTH SERIALIZERS
@@ -128,10 +128,10 @@ class WorkScheduleSerializer(serializers.ModelSerializer):
 # ================================================================
 
 class UserListSerializer(serializers.ModelSerializer):
-    """Lightweight serializer for user list table"""
     role_display  = serializers.CharField(source='get_role_display', read_only=True)
     location_name = serializers.CharField(source='location.name', read_only=True)
     joined        = serializers.DateTimeField(source='date_joined', format='%b %d, %Y', read_only=True)
+    user_status   = serializers.SerializerMethodField()
 
     class Meta:
         model  = User
@@ -139,15 +139,22 @@ class UserListSerializer(serializers.ModelSerializer):
             'id', 'first_name', 'last_name', 'username',
             'email', 'role', 'role_display',
             'location', 'location_name',
-            'is_active', 'joined',
+            'is_active', 'is_suspended', 'user_status', 'joined',
         ]
+
+    def get_user_status(self, obj):
+        if obj.is_suspended:
+            return 'suspended'
+        if not obj.is_active:
+            return 'inactive'
+        return 'active'
 
 
 class UserDetailSerializer(serializers.ModelSerializer):
-    """Full user detail with work schedule"""
     role_display   = serializers.CharField(source='get_role_display', read_only=True)
     location_name  = serializers.CharField(source='location.name', read_only=True)
     work_schedules = WorkScheduleSerializer(many=True, read_only=True)
+    user_status    = serializers.SerializerMethodField()
 
     class Meta:
         model  = User
@@ -155,9 +162,16 @@ class UserDetailSerializer(serializers.ModelSerializer):
             'id', 'first_name', 'last_name', 'username',
             'email', 'role', 'role_display', 'phone',
             'location', 'location_name',
-            'is_active', 'date_joined',
+            'is_active', 'is_suspended', 'user_status', 'date_joined',
             'work_schedules',
         ]
+
+    def get_user_status(self, obj):
+        if obj.is_suspended:
+            return 'suspended'
+        if not obj.is_active:
+            return 'inactive'
+        return 'active'
 
 
 class UserCreateSerializer(serializers.ModelSerializer):
@@ -223,24 +237,50 @@ class UserCreateSerializer(serializers.ModelSerializer):
 
 
 class UserUpdateSerializer(serializers.ModelSerializer):
-    """Update user — password optional, schedule optional"""
     password       = serializers.CharField(write_only=True, required=False, min_length=8)
     work_schedules = WorkScheduleSerializer(many=True, required=False)
+    status         = serializers.ChoiceField(
+        choices=['active', 'suspended'],
+        required=False
+    )
 
     class Meta:
         model  = User
         fields = [
             'first_name', 'last_name', 'username',
             'email', 'password', 'role',
-            'location', 'phone', 'is_active',
+            'location', 'phone',
+            'status',
             'work_schedules',
         ]
+
+    def validate(self, data):
+        # Get role — use incoming role or existing instance role
+        role           = data.get('role', self.instance.role if self.instance else None)
+        work_schedules = data.get('work_schedules', None)
+
+        # Block schedule update for manager roles
+        MANAGER_ROLES = ['district_manager', 'branch_manager', 'super_admin']
+        if work_schedules is not None and role in MANAGER_ROLES:
+            raise serializers.ValidationError({
+                "work_schedules": f"Work schedule cannot be set for role '{role}'."
+            })
+
+        return data
 
     def update(self, instance, validated_data):
         work_schedules_data = validated_data.pop('work_schedules', None)
         password            = validated_data.pop('password', None)
+        status              = validated_data.pop('status', None)
 
-        # Update user fields
+        # ── Handle status change ──────────────────────────────────
+        if status == 'suspended':
+            instance.is_suspended = True
+            instance.is_active    = False
+        elif status == 'active':
+            instance.is_suspended = False
+            instance.is_active    = True
+
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
 
@@ -249,25 +289,34 @@ class UserUpdateSerializer(serializers.ModelSerializer):
 
         instance.save()
 
-        # Update work schedules if provided
-        if work_schedules_data is not None:
-            for schedule_data in work_schedules_data:
-                day = schedule_data.get('day')
-                UserWorkSchedule.objects.update_or_create(
-                    user=instance,
-                    day=day,
-                    defaults={
-                        'is_active':  schedule_data.get('is_active', False),
-                        'start_time': schedule_data.get('start_time'),
-                        'end_time':   schedule_data.get('end_time'),
-                    }
-                )
+        # ── Schedule update ───────────────────────────────────────
+        SCHEDULE_ROLES = ['tattoo_artist', 'body_piercer', 'staff']
 
-        # Refresh from DB to get updated schedules
+        if work_schedules_data is not None:
+            if instance.role in SCHEDULE_ROLES:
+                for schedule_data in work_schedules_data:
+                    day       = schedule_data.get('day')
+                    is_active = schedule_data.get('is_active', False)
+
+                    # Clear times when day is toggled off
+                    start_time = schedule_data.get('start_time') if is_active else None
+                    end_time   = schedule_data.get('end_time')   if is_active else None
+
+                    UserWorkSchedule.objects.update_or_create(
+                        user=instance,
+                        day=day,
+                        defaults={
+                            'is_active':  is_active,
+                            'start_time': start_time,
+                            'end_time':   end_time,
+                        }
+                    )
+            # If role changed to manager type — delete all schedules
+            else:
+                UserWorkSchedule.objects.filter(user=instance).delete()
+
         instance.refresh_from_db()
         return instance
-
-
 # ================================================================
 # USER STATS SERIALIZER
 # ================================================================
@@ -444,21 +493,28 @@ class LocationEmployeeSerializer(serializers.ModelSerializer):
         fields = ['id', 'first_name', 'last_name', 'username', 'role', 'role_display']
  
 
+
 # ================================================================
 # INSTRUCTION SERIALIZERS
 # ================================================================
  
+VISIBILITY_ROLES = [
+    'tattoo_artist',
+    'body_piercer',
+    'staff',
+    'branch_manager',
+    'district_manager',
+]
+ 
+ 
 class InstructionSerializer(serializers.ModelSerializer):
     """Full instruction serializer — create / update / detail"""
-
-    pdf_file = serializers.FileField(write_only=True, required=False)
-
-    # ✅ FIX: override JSONField
+    pdf_file        = serializers.FileField(write_only=True, required=False)
     role_visibility = serializers.ListField(
         child=serializers.CharField(),
         required=True
     )
-
+ 
     class Meta:
         model  = Instruction
         fields = [
@@ -469,6 +525,7 @@ class InstructionSerializer(serializers.ModelSerializer):
             'created_at', 'updated_at',
         ]
         read_only_fields = ['id', 'pdf_url', 'pdf_filename', 'created_at', 'updated_at']
+ 
     def validate_role_visibility(self, value):
         if not value:
             raise serializers.ValidationError("At least one role must be selected.")
@@ -485,17 +542,16 @@ class InstructionSerializer(serializers.ModelSerializer):
         return value.strip()
  
     def create(self, validated_data):
-        pdf_file = validated_data.pop('pdf_file', None)
- 
+        pdf_file    = validated_data.pop('pdf_file', None)
         instruction = Instruction(**validated_data)
  
         if pdf_file:
             import cloudinary.uploader
             upload_result        = cloudinary.uploader.upload(
                 pdf_file,
-                resource_type = 'raw',       # raw = non-image files like PDF
-                folder        = 'instructions/',
-                use_filename  = True,
+                resource_type   = 'raw',
+                folder          = 'instructions/',
+                use_filename    = True,
                 unique_filename = True,
             )
             instruction.pdf_url      = upload_result.get('secure_url')
@@ -544,6 +600,9 @@ class InstructionStatsSerializer(serializers.Serializer):
     tattoo_artists     = serializers.IntegerField()
     body_piercers      = serializers.IntegerField()
     staff              = serializers.IntegerField()
+    branch_managers    = serializers.IntegerField()
+    district_managers  = serializers.IntegerField()
+ 
 
 class SplashScreenSerializer(serializers.ModelSerializer):
     class Meta:
@@ -637,3 +696,39 @@ class AttendanceSerializer(serializers.ModelSerializer):
 
     def get_employee_name(self, obj):
         return f"{obj.user.first_name} {obj.user.last_name}".strip()
+    
+
+class BranchManagerTaskCreateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model  = Task
+        fields = [
+            'title', 'description',
+            'assigned_to', 'due_date',
+            'is_recurring', 'frequency',
+            'requires_photo',
+        ]
+        # No location field — set automatically from manager's location
+
+    def validate_assigned_to(self, value):
+        if value.role not in ASSIGNABLE_ROLES:
+            raise serializers.ValidationError(
+                "Tasks can only be assigned to Tattoo Artists, Body Piercers, or Staff."
+            )
+        if not value.is_active:
+            raise serializers.ValidationError(
+                "Cannot assign task to an inactive user."
+            )
+        return value
+
+    def validate(self, data):
+        is_recurring = data.get('is_recurring', False)
+        frequency    = data.get('frequency', 'none')
+
+        if is_recurring and frequency == 'none':
+            raise serializers.ValidationError({
+                "frequency": "Please select a frequency for the recurring task."
+            })
+        if not is_recurring:
+            data['frequency'] = 'none'
+
+        return data

@@ -2,6 +2,7 @@
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from django.contrib.auth import get_user_model
+from django.utils import timezone
 from django.contrib.auth.password_validation import validate_password
 from .models import FAQ, Attendance, Location, QRSession, SplashScreen, UserWorkSchedule, Task, Instruction
 
@@ -334,50 +335,69 @@ class TaskUserSerializer(serializers.ModelSerializer):
  
     class Meta:
         model  = User
-        fields = ['id', 'first_name', 'last_name', 'username', 'role', 'role_display', 'location_name']
+        fields = ['id', 'first_name', 'last_name', 'username', 'email', 'role', 'role_display', 'location_name']
  
  
+
 # ================================================================
-# TASK SERIALIZERS
+# TASK SERIALIZERS — UPDATED
 # ================================================================
  
 class TaskListSerializer(serializers.ModelSerializer):
     """Lightweight serializer for task list table"""
-    assigned_to_name  = serializers.SerializerMethodField()
-    completed_by_name = serializers.SerializerMethodField()
-    location_name     = serializers.CharField(source='location.name', read_only=True)
-    assigned_to_role  = serializers.CharField(source='assigned_to.get_role_display', read_only=True)
+    assigned_to_name     = serializers.SerializerMethodField()
+    assigned_to_email = serializers.CharField(source='assigned_to.email', read_only=True)
+    assigned_to_role     = serializers.CharField(source='assigned_to.get_role_display', read_only=True)
+    completed_by_name    = serializers.SerializerMethodField()
+    completed_by_role    = serializers.SerializerMethodField()
+    location_name        = serializers.CharField(source='location.name', read_only=True)
+    can_fire = serializers.SerializerMethodField()
  
     class Meta:
         model  = Task
         fields = [
             'id', 'title', 'description',
             'location', 'location_name',
-            'assigned_to', 'assigned_to_name', 'assigned_to_role',
+            'assigned_to', 'assigned_to_name', 'assigned_to_email','assigned_to_role',
             'due_date', 'status',
             'is_recurring', 'frequency',
             'requires_photo',
-            'completed_by', 'completed_by_name',
+            'completed_by', 'completed_by_name', 'completed_by_role',
+            'is_fired',
+            'can_fire',
             'created_at',
         ]
  
     def get_assigned_to_name(self, obj):
-        return f"{obj.assigned_to.first_name} {obj.assigned_to.last_name}"
+        return f"{obj.assigned_to.first_name} {obj.assigned_to.last_name}".strip()
+    
+    def get_can_fire(self, obj):
+        # Show fire button only if task is overdue and user not already fired
+        return obj.status == 'overdue' and not obj.is_fired
  
     def get_completed_by_name(self, obj):
         if obj.completed_by:
-            return f"{obj.completed_by.first_name} {obj.completed_by.last_name}"
+            return f"{obj.completed_by.first_name} {obj.completed_by.last_name}".strip()
+        return None
+ 
+    def get_completed_by_role(self, obj):
+        if obj.completed_by:
+            return obj.completed_by.get_role_display()
         return None
  
  
 class TaskDetailSerializer(serializers.ModelSerializer):
     """Full task detail with all relations"""
-    assigned_to  = TaskUserSerializer(read_only=True)
-    completed_by = TaskUserSerializer(read_only=True)
-    approved_by  = TaskUserSerializer(read_only=True)
-    rejected_by  = TaskUserSerializer(read_only=True)
-    created_by   = TaskUserSerializer(read_only=True)
+    assigned_to   = TaskUserSerializer(read_only=True)
+    completed_by  = TaskUserSerializer(read_only=True)
+    approved_by   = TaskUserSerializer(read_only=True)
+    rejected_by   = TaskUserSerializer(read_only=True)
+    created_by    = TaskUserSerializer(read_only=True)
     location_name = serializers.CharField(source='location.name', read_only=True)
+    can_fire = serializers.SerializerMethodField()
+ 
+    # ── Human readable status label ───────────────────────────
+    status_display = serializers.SerializerMethodField()
  
     class Meta:
         model  = Task
@@ -385,19 +405,33 @@ class TaskDetailSerializer(serializers.ModelSerializer):
             'id', 'title', 'description',
             'location', 'location_name',
             'assigned_to', 'created_by',
-            'due_date', 'status',
+            'due_date', 'status', 'status_display',
             'is_recurring', 'frequency',
             'requires_photo', 'photo_url',
             'completed_by', 'completed_at',
             'approved_by',  'approved_at',
             'rejected_by',  'rejected_at', 'rejection_reason',
+            'is_fired',
+            'can_fire',
             'created_at',   'updated_at',
         ]
+
+    def get_can_fire(self, obj): 
+        return obj.status == 'overdue' and not obj.is_fired   
+ 
+    def get_status_display(self, obj):
+        status_labels = {
+            'pending':        'Pending',
+            'completed':      'Completed',
+            'awaiting_review': 'Awaiting Review',
+            'approved':       'Approved',
+            'rejected':       'Rejected',
+            'overdue':        'Overdue',
+        }
+        return status_labels.get(obj.status, obj.status)
  
  
 class TaskCreateSerializer(serializers.ModelSerializer):
-    """Create task"""
- 
     class Meta:
         model  = Task
         fields = [
@@ -407,6 +441,14 @@ class TaskCreateSerializer(serializers.ModelSerializer):
             'is_recurring', 'frequency',
             'requires_photo',
         ]
+
+    def validate_due_date(self, value):
+        today = timezone.localdate()
+        if value < today:
+            raise serializers.ValidationError(
+                f"Due date cannot be in the past. Today is {today}."
+            )
+        return value    
  
     def validate_assigned_to(self, value):
         if value.role not in ASSIGNABLE_ROLES:
@@ -418,7 +460,6 @@ class TaskCreateSerializer(serializers.ModelSerializer):
         return value
  
     def validate(self, data):
-        # Assigned user must belong to the selected location
         assigned_to = data.get('assigned_to')
         location    = data.get('location')
  
@@ -428,13 +469,12 @@ class TaskCreateSerializer(serializers.ModelSerializer):
                     "assigned_to": "This user does not belong to the selected location."
                 })
  
-        # If recurring, frequency must be set
         is_recurring = data.get('is_recurring', False)
         frequency    = data.get('frequency', 'none')
  
         if is_recurring and frequency == 'none':
             raise serializers.ValidationError({
-                "frequency": "Please select a frequency for the recurring task (daily, weekly, or monthly)."
+                "frequency": "Please select a frequency for the recurring task."
             })
  
         if not is_recurring:
@@ -444,8 +484,6 @@ class TaskCreateSerializer(serializers.ModelSerializer):
  
  
 class TaskUpdateSerializer(serializers.ModelSerializer):
-    """Update task — all fields optional"""
- 
     class Meta:
         model  = Task
         fields = [
@@ -455,7 +493,15 @@ class TaskUpdateSerializer(serializers.ModelSerializer):
             'is_recurring', 'frequency',
             'requires_photo',
         ]
- 
+    
+    def validate_due_date(self, value):
+        today = timezone.localdate()
+        if value < today:
+            raise serializers.ValidationError(
+                f"Due date cannot be in the past. Today is {today}."
+            )
+        return value
+
     def validate_assigned_to(self, value):
         if value.role not in ASSIGNABLE_ROLES:
             raise serializers.ValidationError(
@@ -467,24 +513,21 @@ class TaskUpdateSerializer(serializers.ModelSerializer):
  
  
 class TaskApproveSerializer(serializers.Serializer):
-    """Approve a completed task"""
-    pass  # No body needed — just the action
+    pass
  
  
 class TaskRejectSerializer(serializers.Serializer):
-    """Reject a task with a reason"""
     rejection_reason = serializers.CharField(required=True, min_length=5)
  
  
 class TaskStatsSerializer(serializers.Serializer):
-    """Stats block at top of task list"""
+    """Updated stats — all_tasks, overdue, completed, rejected"""
     all_tasks = serializers.IntegerField()
-    pending   = serializers.IntegerField()
+    overdue   = serializers.IntegerField()
     completed = serializers.IntegerField()
-    approved  = serializers.IntegerField()
+    rejected  = serializers.IntegerField()
  
  
-# ── Endpoint to get employees by location (for assign dropdown) ───
 class LocationEmployeeSerializer(serializers.ModelSerializer):
     role_display = serializers.CharField(source='get_role_display', read_only=True)
  
@@ -492,6 +535,10 @@ class LocationEmployeeSerializer(serializers.ModelSerializer):
         model  = User
         fields = ['id', 'first_name', 'last_name', 'username', 'role', 'role_display']
  
+ 
+# ── Fire User Serializer ──────────────────────────────────────────
+class FireUserSerializer(serializers.Serializer):
+    fire_reason = serializers.CharField(required=True, min_length=5)
 
 
 # ================================================================

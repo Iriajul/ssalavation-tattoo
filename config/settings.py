@@ -14,32 +14,18 @@ environ.Env.read_env(str(BASE_DIR / ".env"))
 # SECURITY
 # --------------------------------------------------
 SECRET_KEY = env("SECRET_KEY")
-
 DEBUG = env.bool("DEBUG", default=True)
 
-ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=[
+ALLOWED_HOSTS = [
     "127.0.0.1",
     "localhost",
     "10.10.13.10",
-    "salvation-tattoo-jvai-1v2ivgj9x.vercel.app",
-    "8xc6kb06-8000.inc1.devtunnels.ms",   # ✅ ADD THIS
-])
-
-CSRF_TRUSTED_ORIGINS = [
-    "https://hirenearbylocals.com",
-    "https://www.hirenearbylocals.com",
-    "https://8xc6kb06-8000.inc1.devtunnels.ms",
-    "https://salvation-tattoo-jvai-1v2ivgj9x.vercel.app",
+    "salvation-tattoo-jvai.vercel.app",
+    "stm9wlhp-8000.inc1.devtunnels.ms",
 ]
 
-SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
-USE_X_FORWARDED_HOST = True
-SESSION_COOKIE_SECURE = not DEBUG
-CSRF_COOKIE_SECURE = not DEBUG
-SECURE_SSL_REDIRECT = False
-
 # --------------------------------------------------
-# INSTALLED APPS
+# APPLICATION DEFINITION
 # --------------------------------------------------
 INSTALLED_APPS = [
     "corsheaders",
@@ -58,36 +44,39 @@ INSTALLED_APPS = [
     "cloudinary_storage",
 
     # Local apps
-    "apps.users",
     "apps.admin_api",
+    "apps.users",
 ]
 
 # --------------------------------------------------
-# MIDDLEWARE (IMPORTANT ORDER)
+# MIDDLEWARE
 # --------------------------------------------------
 MIDDLEWARE = [
-    "corsheaders.middleware.CorsMiddleware",   # ✅ MUST BE FIRST
+    "corsheaders.middleware.CorsMiddleware",  # MUST BE FIRST
+
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
+
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
+
 # --------------------------------------------------
-# URL & APP CONFIG
+# URL / WSGI
 # --------------------------------------------------
 ROOT_URLCONF = "config.urls"
 WSGI_APPLICATION = "config.wsgi.application"
 
 # --------------------------------------------------
-# TEMPLATES (REQUIRED FOR ADMIN)
+# TEMPLATES
 # --------------------------------------------------
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
-        "DIRS": [BASE_DIR / "templates"],  # optional
+        "DIRS": [BASE_DIR / "templates"],
         "APP_DIRS": True,
         "OPTIONS": {
             "context_processors": [
@@ -101,7 +90,7 @@ TEMPLATES = [
 ]
 
 # --------------------------------------------------
-# DATABASE (POSTGRESQL)
+# DATABASE
 # --------------------------------------------------
 DATABASES = {
     "default": {
@@ -118,7 +107,7 @@ DATABASES = {
 }
 
 # --------------------------------------------------
-# AUTHENTICATION
+# AUTH
 # --------------------------------------------------
 AUTH_USER_MODEL = "users.User"
 
@@ -129,8 +118,13 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": (
         "rest_framework.permissions.IsAuthenticated",
     ),
+    "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
+    "PAGE_SIZE": 5,
 }
 
+# --------------------------------------------------
+# SIMPLE JWT
+# --------------------------------------------------
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(
         minutes=env.int("ACCESS_TOKEN_LIFETIME_MINUTES", 1440)
@@ -144,17 +138,36 @@ SIMPLE_JWT = {
 }
 
 # --------------------------------------------------
-# CORS
+# CORS (FIXED)
 # --------------------------------------------------
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
-    "https://8xc6kb06-8000.inc1.devtunnels.ms",
-    "https://salvation-tattoo-jvai-1v2ivgj9x.vercel.app", 
+    "https://salvation-tattoo-jvai.vercel.app",
 ]
 
 CORS_ALLOW_CREDENTIALS = True
-CORS_ALLOW_HEADERS = ["*"]
+CORS_ALLOW_ALL_ORIGINS = False
+
+# --------------------------------------------------
+# CSRF (FIXED)
+# --------------------------------------------------
+CSRF_TRUSTED_ORIGINS = [
+    "https://hirenearbylocals.com",
+    "https://www.hirenearbylocals.com",
+    "https://stm9wlhp-8000.inc1.devtunnels.ms",
+    "https://salvation-tattoo-jvai.vercel.app",
+]
+
+# --------------------------------------------------
+# SECURITY SETTINGS
+# --------------------------------------------------
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+USE_X_FORWARDED_HOST = True
+
+SESSION_COOKIE_SECURE = not DEBUG
+CSRF_COOKIE_SECURE = not DEBUG
+SECURE_SSL_REDIRECT = False
 
 # --------------------------------------------------
 # STATIC FILES
@@ -173,7 +186,7 @@ USE_TZ = True
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # --------------------------------------------------
-# EMAIL CONFIG
+# EMAIL
 # --------------------------------------------------
 EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
 EMAIL_HOST = env("EMAIL_HOST")
@@ -191,17 +204,5 @@ CLOUDINARY_STORAGE = {
     "API_KEY": env("CLOUDINARY_API_KEY"),
     "API_SECRET": env("CLOUDINARY_API_SECRET"),
 }
-
-REST_FRAMEWORK = {
-    "DEFAULT_AUTHENTICATION_CLASSES": (
-        "rest_framework_simplejwt.authentication.JWTAuthentication",
-    ),
-    "DEFAULT_PERMISSION_CLASSES": (
-        "rest_framework.permissions.IsAuthenticated",
-    ),
-    "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination", 
-    "PAGE_SIZE": 5,  
-}
-
 
 DEFAULT_FILE_STORAGE = "cloudinary_storage.storage.MediaCloudinaryStorage"

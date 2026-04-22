@@ -384,14 +384,18 @@ class UserViewSet(viewsets.ModelViewSet):
         }, status=status.HTTP_200_OK)
 
 # ================================================================
-# TASK VIEWSET
+# TASK VIEWSET — UPDATED
 # ================================================================
-
+ 
 class TaskViewSet(viewsets.ModelViewSet):
     permission_classes = [IsSuperAdmin]
     filter_backends    = [SearchFilter]
-    search_fields      = ['title', 'description', 'assigned_to__first_name', 'assigned_to__last_name']
-
+    search_fields      = [
+        'title', 'description',
+        'assigned_to__first_name', 'assigned_to__last_name',
+        'completed_by__first_name', 'completed_by__last_name',  # ← search by completed by name
+    ]
+ 
     def get_queryset(self):
         queryset = Task.objects.select_related(
             'location', 'assigned_to', 'completed_by',
@@ -400,14 +404,29 @@ class TaskViewSet(viewsets.ModelViewSet):
 
         status_filter   = self.request.query_params.get('status')
         location_filter = self.request.query_params.get('location')
+        period_filter   = self.request.query_params.get('period')
 
-        if status_filter:
+        if status_filter and status_filter != 'all':
             queryset = queryset.filter(status=status_filter)
-        if location_filter:
+
+        if location_filter and location_filter != 'all':
             queryset = queryset.filter(location_id=location_filter)
 
-        return queryset
+        # ── Period filter ─────────────────────────────────────────
+        if period_filter and period_filter != 'all':
+            today = timezone.localdate()   # ← use localdate not now.date()
 
+            if period_filter == 'today':
+                queryset = queryset.filter(created_at__date=today)
+            elif period_filter == 'weekly':
+                queryset = queryset.filter(created_at__date__gte=today - timedelta(days=7))
+            elif period_filter == 'monthly':
+                queryset = queryset.filter(created_at__date__gte=today - timedelta(days=30))
+            elif period_filter == 'yearly':
+                queryset = queryset.filter(created_at__date__gte=today - timedelta(days=365))
+
+        return queryset
+    
     def get_serializer_class(self):
         if self.action == 'list':
             return TaskListSerializer
@@ -416,38 +435,48 @@ class TaskViewSet(viewsets.ModelViewSet):
         if self.action in ['update', 'partial_update']:
             return TaskUpdateSerializer
         return TaskDetailSerializer
-
+ 
     def list(self, request, *args, **kwargs):
-        queryset  = self.filter_queryset(self.get_queryset())
-        all_tasks = Task.objects.all()
-
+        queryset      = self.filter_queryset(self.get_queryset())
+        search_query  = request.query_params.get('search', '').strip()
+        all_tasks     = Task.objects.all()
+ 
+        # ── Stats — always from all tasks ─────────────────────
         stats = TaskStatsSerializer({
             'all_tasks': all_tasks.count(),
-            'pending':   all_tasks.filter(status='pending').count(),
+            'overdue':   all_tasks.filter(status='overdue').count(),
             'completed': all_tasks.filter(status='completed').count(),
-            'approved':  all_tasks.filter(status='approved').count(),
+            'rejected':  all_tasks.filter(status='rejected').count(),
         }).data
-
+ 
+        # ── If searching by completed_by — skip stats cards ──
+        # Frontend handles hiding stats when search is active
         page = self.paginate_queryset(queryset)
         if page is not None:
             serializer = self.get_serializer(page, many=True)
             paginated  = self.get_paginated_response(serializer.data)
-            return Response({
-                'stats': stats,
-                'tasks': paginated.data,
-            }, status=status.HTTP_200_OK)
-
+ 
+            response_data = {'tasks': paginated.data}
+ 
+            # Only include stats when not searching by employee
+            if not search_query:
+                response_data['stats'] = stats
+ 
+            return Response(response_data, status=status.HTTP_200_OK)
+ 
         serializer = self.get_serializer(queryset, many=True)
-        return Response({
-            'stats': stats,
-            'tasks': serializer.data,
-        }, status=status.HTTP_200_OK)
-
+        response_data = {'tasks': serializer.data}
+ 
+        if not search_query:
+            response_data['stats'] = stats
+ 
+        return Response(response_data, status=status.HTTP_200_OK)
+ 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         task = serializer.save(created_by=request.user)
-
+ 
         ActivityLog.objects.create(
             action      = 'task_assigned',
             actor       = request.user,
@@ -455,16 +484,16 @@ class TaskViewSet(viewsets.ModelViewSet):
             target_user = task.assigned_to,
             message     = f'Task "{task.title}" assigned to {task.assigned_to.get_full_name()}'
         )
-
+ 
         return Response({
             'message': 'Task created successfully.',
             'task':    TaskDetailSerializer(task).data,
         }, status=status.HTTP_201_CREATED)
-
+ 
     def retrieve(self, request, *args, **kwargs):
         task = self.get_object()
         return Response(TaskDetailSerializer(task).data, status=status.HTTP_200_OK)
-
+ 
     def partial_update(self, request, *args, **kwargs):
         task       = self.get_object()
         serializer = self.get_serializer(task, data=request.data, partial=True)
@@ -474,7 +503,7 @@ class TaskViewSet(viewsets.ModelViewSet):
             'message': 'Task updated successfully.',
             'task':    TaskDetailSerializer(task).data,
         }, status=status.HTTP_200_OK)
-
+ 
     def destroy(self, request, *args, **kwargs):
         task = self.get_object()
         task.delete()
@@ -482,23 +511,24 @@ class TaskViewSet(viewsets.ModelViewSet):
             {"message": "Task deleted successfully."},
             status=status.HTTP_200_OK
         )
-
+ 
+    # ── Approve ───────────────────────────────────────────────────
     @action(detail=True, methods=['post'], url_path='approve')
     def approve(self, request, pk=None):
         task = self.get_object()
-
-        if task.status not in ['completed', 'rejected']:
+ 
+        if task.status not in ['completed', 'awaiting_review', 'rejected']:
             return Response(
-                {"error": "Only completed or previously rejected tasks can be approved."},
+                {"error": "Only completed, awaiting review or rejected tasks can be approved."},
                 status=status.HTTP_400_BAD_REQUEST
             )
-
+ 
         task.status           = 'approved'
         task.approved_by      = request.user
         task.approved_at      = timezone.now()
         task.rejection_reason = None
         task.save(update_fields=['status', 'approved_by', 'approved_at', 'rejection_reason'])
-
+ 
         ActivityLog.objects.create(
             action      = 'task_approved',
             actor       = request.user,
@@ -506,30 +536,31 @@ class TaskViewSet(viewsets.ModelViewSet):
             target_user = task.assigned_to,
             message     = f'Task "{task.title}" approved for {task.assigned_to.get_full_name()}'
         )
-
+ 
         return Response({
             'message': 'Task approved successfully.',
             'task':    TaskDetailSerializer(task).data,
         }, status=status.HTTP_200_OK)
-
+ 
+    # ── Reject ────────────────────────────────────────────────────
     @action(detail=True, methods=['post'], url_path='reject')
     def reject(self, request, pk=None):
         task       = self.get_object()
         serializer = TaskRejectSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-
-        if task.status not in ['completed', 'approved']:
+ 
+        if task.status not in ['completed', 'awaiting_review', 'approved']:
             return Response(
-                {"error": "Only completed or approved tasks can be rejected."},
+                {"error": "Only completed, awaiting review or approved tasks can be rejected."},
                 status=status.HTTP_400_BAD_REQUEST
             )
-
+ 
         task.status           = 'rejected'
         task.rejected_by      = request.user
         task.rejected_at      = timezone.now()
         task.rejection_reason = serializer.validated_data['rejection_reason']
         task.save(update_fields=['status', 'rejected_by', 'rejected_at', 'rejection_reason'])
-
+ 
         ActivityLog.objects.create(
             action      = 'task_rejected',
             actor       = request.user,
@@ -537,13 +568,80 @@ class TaskViewSet(viewsets.ModelViewSet):
             target_user = task.assigned_to,
             message     = f'Task "{task.title}" rejected — {serializer.validated_data["rejection_reason"]}'
         )
-
+ 
         return Response({
             'message': 'Task rejected.',
             'task':    TaskDetailSerializer(task).data,
         }, status=status.HTTP_200_OK)
+ 
+    # ── Fire User ─────────────────────────────────────────────────
+    @action(detail=True, methods=['post'], url_path='fire-user')
+    def fire_user(self, request, pk=None):
+        task = self.get_object()
 
+        if task.status != 'overdue':
+            return Response(
+                {"error": "You can only fire an employee for an overdue task."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
+        if task.is_fired:
+            return Response(
+                {"error": "This employee has already been fired for this task."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        serializer = FireUserSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        fire_reason = serializer.validated_data['fire_reason']
+        user        = task.assigned_to
+
+        # ── Mark task as fired ────────────────────────────────────
+        task.is_fired = True
+        task.save(update_fields=['is_fired'])
+
+        # ── Deactivate user ───────────────────────────────────────
+        user.is_active    = False
+        user.is_suspended = True
+        user.save(update_fields=['is_active', 'is_suspended'])
+
+        # ── Send fire email ───────────────────────────────────────
+        try:
+            send_mail(
+                subject = "Employment Termination — Salvation Tattoo Lounge",
+                message = (
+                    f"Dear {user.get_full_name()},\n\n"
+                    f"We regret to inform you that your employment at Salvation Tattoo Lounge "
+                    f"has been terminated.\n\n"
+                    f"Reason: {fire_reason}\n\n"
+                    f"Please contact management if you have any questions.\n\n"
+                    f"Salvation Tattoo Lounge Management"
+                ),
+                from_email     = settings.DEFAULT_FROM_EMAIL,
+                recipient_list = [user.email],
+                fail_silently  = False,
+            )
+        except Exception as e:
+            print(f"Fire email failed: {e}")
+
+        ActivityLog.objects.create(
+            action      = 'user_suspended',
+            actor       = request.user,
+            target_user = user,
+            message     = f'{user.get_full_name()} was fired. Reason: {fire_reason}'
+        )
+
+        return Response({
+            'message':     f'{user.get_full_name()} has been fired and notified by email.',
+            'employee': {
+                'id':    user.id,
+                'name':  user.get_full_name(),
+                'email': user.email,
+            },
+            'fire_reason': fire_reason,
+        }, status=status.HTTP_200_OK)
+    
 # ================================================================
 # EMPLOYEES BY LOCATION
 # ================================================================

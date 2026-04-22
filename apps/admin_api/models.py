@@ -79,12 +79,13 @@ class Task(models.Model):
  
     # ── Status ───────────────────────────────────────────────────
     STATUS_CHOICES = (
-        ('pending',   'Pending'),
-        ('completed', 'Completed'),
-        ('approved',  'Approved'),
-        ('rejected',  'Rejected'),
-        ('overdue',   'Overdue'),
-    )
+    ('pending',          'Pending'),
+    ('completed',        'Completed'),
+    ('awaiting_review',  'Awaiting Review'),  # ← new
+    ('approved',         'Approved'),
+    ('rejected',         'Rejected'),
+    ('overdue',          'Overdue'),
+)
  
     # ── Recurring frequency ───────────────────────────────────────
     FREQUENCY_CHOICES = (
@@ -117,7 +118,8 @@ class Task(models.Model):
         related_name='created_tasks'
     )
     due_date    = models.DateField()
-    status      = models.CharField(max_length=10, choices=STATUS_CHOICES, default='pending')
+    status      = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    is_fired = models.BooleanField(default=False)
  
     # ── Recurring ─────────────────────────────────────────────────
     is_recurring = models.BooleanField(default=False)

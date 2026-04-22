@@ -4,7 +4,7 @@ from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 from django.contrib.auth.password_validation import validate_password
-from .models import FAQ, Attendance, Location, QRSession, SplashScreen, UserWorkSchedule, Task, Instruction
+from .models import FAQ, Attendance, Location, QRSession, SplashScreen, UserWorkSchedule, Task, Instruction, Notification
 
 User = get_user_model()
 
@@ -533,7 +533,7 @@ class LocationEmployeeSerializer(serializers.ModelSerializer):
  
     class Meta:
         model  = User
-        fields = ['id', 'first_name', 'last_name', 'username', 'role', 'role_display']
+        fields = ['id', 'first_name', 'last_name', 'username',  'email','role', 'role_display']
  
  
 # ── Fire User Serializer ──────────────────────────────────────────
@@ -654,7 +654,7 @@ class InstructionStatsSerializer(serializers.Serializer):
 class SplashScreenSerializer(serializers.ModelSerializer):
     class Meta:
         model  = SplashScreen
-        fields = ['id', 'image_url', 'updated_at']
+        fields = ['id', 'web_image_url', 'app_image_url', 'updated_at']
 
 
 class FAQSerializer(serializers.ModelSerializer):
@@ -779,3 +779,48 @@ class BranchManagerTaskCreateSerializer(serializers.ModelSerializer):
             data['frequency'] = 'none'
 
         return data
+
+class NotificationStatsSerializer(serializers.Serializer):
+    total_sent       = serializers.IntegerField()
+    delivered        = serializers.IntegerField()
+    active_locations = serializers.IntegerField()
+
+class NotificationCreateSerializer(serializers.Serializer):
+    email    = serializers.EmailField(required=False)   # optional — if empty, send to all
+    location = serializers.PrimaryKeyRelatedField(
+        queryset=Location.objects.all(),
+        required=False                                  # optional — if empty, all locations
+    )
+    message  = serializers.CharField(required=True, min_length=5)
+
+    def validate(self, data):
+        email    = data.get('email')
+        location = data.get('location')
+
+        # If email provided, location must also be provided
+        if email and not location:
+            raise serializers.ValidationError({
+                "location": "Location is required when sending to a specific user."
+            })
+
+        return data
+
+class NotificationSerializer(serializers.ModelSerializer):
+    location_name = serializers.CharField(source='location.name', read_only=True)
+    sent_by_name  = serializers.SerializerMethodField()
+
+    class Meta:
+        model  = Notification
+        fields = [
+            'id', 'email',
+            'location', 'location_name',
+            'message', 'status',
+            'sent_by', 'sent_by_name',
+            'created_at',
+        ]
+        read_only_fields = ['id', 'status', 'sent_by', 'created_at']
+
+    def get_sent_by_name(self, obj):
+        if obj.sent_by:
+            return f"{obj.sent_by.first_name} {obj.sent_by.last_name}".strip() or obj.sent_by.username
+        return None

@@ -18,7 +18,7 @@ from rest_framework_simplejwt.exceptions import InvalidToken
 from rest_framework_simplejwt.token_blacklist.models import OutstandingToken, BlacklistedToken
 import secrets
 from django.db.models import Prefetch
-from .models import FAQ, Attendance, Location, QRSession, SplashScreen, UserWorkSchedule, Task, Instruction, ActivityLog
+from .models import FAQ, Attendance, Location, QRSession, SplashScreen, UserWorkSchedule, Task, Instruction, ActivityLog,Notification
 from .permissions import IsBranchManager, IsSuperAdmin
 from .serializers import (
     AdminChangePasswordSerializer,
@@ -51,6 +51,10 @@ from .serializers import (
     InstructionSerializer,
     InstructionListSerializer,
     InstructionStatsSerializer,
+    NotificationCreateSerializer,
+    NotificationSerializer,
+    NotificationStatsSerializer
+    
 )
 
 User = get_user_model()
@@ -849,31 +853,49 @@ class InstructionViewSet(viewsets.ModelViewSet):
 # ================================================================
 # APP CONTENT
 # ================================================================
-
 class SplashScreenView(APIView):
-    permission_classes = [AllowAny]
+    permission_classes = [IsSuperAdmin]
 
     def get(self, request):
         obj = SplashScreen.objects.first()
-        return Response(SplashScreenSerializer(obj).data if obj else {"image_url": None})
+        return Response(SplashScreenSerializer(obj).data if obj else {
+            "web_image_url": None,
+            "app_image_url": None,
+        })
 
     def post(self, request):
-        image = request.FILES.get('image')
-        if not image:
-            return Response({"error": "No image provided."}, status=400)
-
         import cloudinary.uploader
-        result = cloudinary.uploader.upload(image, folder="splash_screen")
 
-        obj, _ = SplashScreen.objects.get_or_create(id=1)
-        obj.image_url = result['secure_url']
+        image_type = request.data.get('type')  # 'web' or 'app'
+        image      = request.FILES.get('image')
+
+        if not image:
+            return Response(
+                {"error": "No image provided."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if image_type not in ['web', 'app']:
+            return Response(
+                {"error": "type must be 'web' or 'app'"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        result     = cloudinary.uploader.upload(image, folder="splash_screen")
+        obj, _     = SplashScreen.objects.get_or_create(id=1)
+
+        if image_type == 'web':
+            obj.web_image_url = result['secure_url']
+        else:
+            obj.app_image_url = result['secure_url']
+
         obj.save()
 
         return Response({
-            "message":   "Splash screen updated.",
-            "image_url": obj.image_url,
+            "message":   f"{'Website' if image_type == 'web' else 'App'} splash screen updated.",
+            "image_url": result['secure_url'],
+            "type":      image_type,
         })
-
 
 class FAQViewSet(viewsets.ModelViewSet):
     permission_classes = [IsSuperAdmin]
@@ -965,23 +987,32 @@ class PerformanceAnalyticsView(APIView):
     permission_classes = [IsSuperAdmin]
 
     def get(self, request):
-        period = request.query_params.get('period', 'weekly')
+        period = request.query_params.get('period', 'today')  # ← default changed
 
         now = timezone.now()
-        if period == 'monthly':
+
+        # ── Date range ────────────────────────────────────────────
+        if period == 'today':
+            start_date     = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            days_in_period = 1
+        elif period == 'monthly':
             start_date     = now - timedelta(days=30)
             days_in_period = 30
-        else:
+        elif period == 'yearly':
+            start_date     = now - timedelta(days=365)
+            days_in_period = 365
+        else:  # weekly
             start_date     = now - timedelta(days=7)
             days_in_period = 7
 
         employees = User.objects.filter(
-            role__in=EMPLOYEE_ROLES,
-            is_active=True
+            role__in  = EMPLOYEE_ROLES,
+            is_active = True
         )
 
         tasks_in_period = Task.objects.filter(
-            assigned_to__role__in=EMPLOYEE_ROLES,
+            assigned_to__role__in = EMPLOYEE_ROLES,
+            created_at__gte       = start_date,
         )
 
         # ── Per-employee stats ────────────────────────────────────
@@ -1040,8 +1071,8 @@ class PerformanceAnalyticsView(APIView):
             date__gte  = start_date.date(),
             status__in = ['present', 'late']
         ).count()
-        max_possible     = total_emp * days_in_period
-        avg_attendance   = round((total_attended / max_possible * 100)) if max_possible > 0 else 0
+        max_possible   = total_emp * days_in_period
+        avg_attendance = round((total_attended / max_possible * 100)) if max_possible > 0 else 0
 
         # ── Build ranked list ─────────────────────────────────────
         ranked_list = []
@@ -1084,17 +1115,29 @@ class ReportsAnalyticsView(APIView):
     permission_classes = [IsSuperAdmin]
 
     def get(self, request):
-        period          = request.query_params.get('period', 'weekly')
+        period          = request.query_params.get('period', 'today')  # ← default changed
         location_filter = request.query_params.get('location')
         user_filter     = request.query_params.get('user')
 
         now = timezone.now()
-        if period == 'monthly':
+
+        # ── Date range ────────────────────────────────────────────
+        if period == 'today':
+            start_date     = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            days_in_period = 1
+            chart_days     = 1
+        elif period == 'monthly':
             start_date     = now - timedelta(days=30)
             days_in_period = 30
-        else:
+            chart_days     = 30
+        elif period == 'yearly':
+            start_date     = now - timedelta(days=365)
+            days_in_period = 365
+            chart_days     = 12   # monthly buckets for yearly chart
+        else:  # weekly
             start_date     = now - timedelta(days=7)
             days_in_period = 7
+            chart_days     = 7
 
         # ── Tasks ─────────────────────────────────────────────────
         tasks = Task.objects.filter(created_at__gte=start_date)
@@ -1115,32 +1158,89 @@ class ReportsAnalyticsView(APIView):
             date__gte  = start_date.date(),
             status__in = ['present', 'late']
         ).count()
-        max_possible    = total_employees * days_in_period
-        avg_attendance  = round((total_attended / max_possible * 100)) if max_possible > 0 else 0
+        max_possible   = total_employees * days_in_period
+        avg_attendance = round((total_attended / max_possible * 100)) if max_possible > 0 else 0
 
         # ── Attendance trend chart ────────────────────────────────
         attendance_trend = []
-        for i in range(6, -1, -1):
-            day         = (now - timedelta(days=i)).date()
-            day_records = Attendance.objects.filter(date=day)
+        if period == 'yearly':
+            # ── Monthly buckets for yearly ────────────────────────
+            for i in range(11, -1, -1):
+                from dateutil.relativedelta import relativedelta
+                month_start = (now - relativedelta(months=i)).replace(
+                    day=1, hour=0, minute=0, second=0, microsecond=0
+                )
+                month_end   = (month_start + relativedelta(months=1))
+                month_records = Attendance.objects.filter(
+                    date__gte=month_start.date(),
+                    date__lt=month_end.date()
+                )
+                attendance_trend.append({
+                    'date':    month_start.strftime('%b %Y'),
+                    'present': month_records.filter(status='present').count(),
+                    'late':    month_records.filter(status='late').count(),
+                    'absent':  month_records.filter(status='absent').count(),
+                })
+        elif period == 'today':
+            # ── Single day ────────────────────────────────────────
+            today_records = Attendance.objects.filter(date=now.date())
             attendance_trend.append({
-                'date':    day.strftime('%b %d'),
-                'present': day_records.filter(status='present').count(),
-                'late':    day_records.filter(status='late').count(),
-                'absent':  day_records.filter(status='absent').count(),
+                'date':    now.strftime('%b %d'),
+                'present': today_records.filter(status='present').count(),
+                'late':    today_records.filter(status='late').count(),
+                'absent':  today_records.filter(status='absent').count(),
             })
+        else:
+            # ── Daily buckets for weekly/monthly ──────────────────
+            for i in range(chart_days - 1, -1, -1):
+                day         = (now - timedelta(days=i)).date()
+                day_records = Attendance.objects.filter(date=day)
+                attendance_trend.append({
+                    'date':    day.strftime('%b %d'),
+                    'present': day_records.filter(status='present').count(),
+                    'late':    day_records.filter(status='late').count(),
+                    'absent':  day_records.filter(status='absent').count(),
+                })
 
-        # ── Weekly task completion chart ──────────────────────────
-        weekly_chart = []
-        for i in range(6, -1, -1):
-            day       = (now - timedelta(days=i)).date()
-            day_tasks = tasks.filter(created_at__date=day)
-            weekly_chart.append({
-                'date':      day.strftime('%b %d'),
-                'approved':  day_tasks.filter(status='approved').count(),
-                'completed': day_tasks.filter(status='completed').count(),
-                'pending':   day_tasks.filter(status='pending').count(),
+        # ── Task completion chart ─────────────────────────────────
+        task_chart = []
+        if period == 'yearly':
+            # ── Monthly buckets ───────────────────────────────────
+            for i in range(11, -1, -1):
+                from dateutil.relativedelta import relativedelta
+                month_start = (now - relativedelta(months=i)).replace(
+                    day=1, hour=0, minute=0, second=0, microsecond=0
+                )
+                month_end   = (month_start + relativedelta(months=1))
+                month_tasks = tasks.filter(
+                    created_at__gte=month_start,
+                    created_at__lt=month_end
+                )
+                task_chart.append({
+                    'date':      month_start.strftime('%b %Y'),
+                    'approved':  month_tasks.filter(status='approved').count(),
+                    'completed': month_tasks.filter(status='completed').count(),
+                    'pending':   month_tasks.filter(status='pending').count(),
+                })
+        elif period == 'today':
+            # ── Single day ────────────────────────────────────────
+            task_chart.append({
+                'date':      now.strftime('%b %d'),
+                'approved':  tasks.filter(status='approved').count(),
+                'completed': tasks.filter(status='completed').count(),
+                'pending':   tasks.filter(status='pending').count(),
             })
+        else:
+            # ── Daily buckets for weekly/monthly ──────────────────
+            for i in range(chart_days - 1, -1, -1):
+                day       = (now - timedelta(days=i)).date()
+                day_tasks = tasks.filter(created_at__date=day)
+                task_chart.append({
+                    'date':      day.strftime('%b %d'),
+                    'approved':  day_tasks.filter(status='approved').count(),
+                    'completed': day_tasks.filter(status='completed').count(),
+                    'pending':   day_tasks.filter(status='pending').count(),
+                })
 
         # ── By location ───────────────────────────────────────────
         locations              = Location.objects.filter(status='active')
@@ -1148,7 +1248,6 @@ class ReportsAnalyticsView(APIView):
         attendance_by_location = []
 
         for loc in locations:
-            # Task completion by location
             loc_tasks     = tasks.filter(location=loc)
             loc_total     = loc_tasks.count()
             loc_completed = loc_tasks.filter(status__in=['completed', 'approved']).count()
@@ -1161,19 +1260,18 @@ class ReportsAnalyticsView(APIView):
                 'completion_rate': loc_rate,
             })
 
-            # Attendance by location
-            loc_employees   = User.objects.filter(
-                location   = loc,
-                role__in   = EMPLOYEE_ROLES,
-                is_active  = True
+            loc_employees = User.objects.filter(
+                location  = loc,
+                role__in  = EMPLOYEE_ROLES,
+                is_active = True
             ).count()
-            loc_attended    = Attendance.objects.filter(
+            loc_attended  = Attendance.objects.filter(
                 location   = loc,
                 date__gte  = start_date.date(),
                 status__in = ['present', 'late']
             ).count()
-            loc_max         = loc_employees * days_in_period
-            loc_att_rate    = round((loc_attended / loc_max * 100)) if loc_max > 0 else 0
+            loc_max      = loc_employees * days_in_period
+            loc_att_rate = round((loc_attended / loc_max * 100)) if loc_max > 0 else 0
             attendance_by_location.append({
                 'location_id':     loc.id,
                 'location_name':   loc.name,
@@ -1184,15 +1282,28 @@ class ReportsAnalyticsView(APIView):
         task_by_location.sort(key=lambda x: x['completion_rate'], reverse=True)
         attendance_by_location.sort(key=lambda x: x['attendance_rate'], reverse=True)
 
-        # ── Attendance log — grouped by date ─────────────────────────
-        from django.db.models import Count, Q
-
+        # ── Attendance log ────────────────────────────────────────
         attendance_by_date = []
 
-        # Get last 7 days
-        for i in range(6, -1, -1):
-            day = (now - timedelta(days=i)).date()
+        if period == 'today':
+            days_to_show = [now.date()]
+        elif period == 'yearly':
+            days_to_show = [
+                (now - timedelta(days=i)).date()
+                for i in range(364, -1, -1)
+            ]
+        elif period == 'monthly':
+            days_to_show = [
+                (now - timedelta(days=i)).date()
+                for i in range(29, -1, -1)
+            ]
+        else:  # weekly
+            days_to_show = [
+                (now - timedelta(days=i)).date()
+                for i in range(6, -1, -1)
+            ]
 
+        for day in days_to_show:
             day_records = Attendance.objects.filter(date=day)
             if location_filter:
                 day_records = day_records.filter(location_id=location_filter)
@@ -1204,22 +1315,31 @@ class ReportsAnalyticsView(APIView):
             total_late    = day_records.filter(status='late').count()
             total         = total_present + total_absent + total_late
 
-            rate = round((total_present + total_late) / total * 100) if total > 0 else 0
+            # Skip empty days for yearly to keep response small
+            if period == 'yearly' and total == 0:
+                continue
 
-            # Label today
+            rate  = round((total_present + total_late) / total * 100) if total > 0 else 0
             label = day.strftime('%b %d, %Y')
             if day == now.date():
                 label += ' (Today)'
 
+            loc_name = 'All Locations'
+            if location_filter:
+                loc = Location.objects.filter(id=location_filter).first()
+                loc_name = loc.name if loc else 'All Locations'
+
             attendance_by_date.append({
                 'date':     label,
                 'raw_date': str(day),
-                'location': 'All Locations' if not location_filter else Location.objects.filter(id=location_filter).first().name if Location.objects.filter(id=location_filter).exists() else 'All Locations',
+                'location': loc_name,
                 'present':  total_present,
                 'absent':   total_absent,
                 'late':     total_late,
                 'rate':     f"{rate}%",
             })
+
+
         return Response({
             'period': period,
             'stats': {
@@ -1229,10 +1349,12 @@ class ReportsAnalyticsView(APIView):
                 'pending_tasks':        pending_tasks,
             },
             'attendance_trend':            attendance_trend,
-            'weekly_task_completion':      weekly_chart,
+            'task_completion_chart':       task_chart,
             'attendance_by_location':      attendance_by_location,
             'task_completion_by_location': task_by_location,
-            'attendance_log':              attendance_by_date, 
+
+
+        
         })
 
 # ================================================================
@@ -1958,3 +2080,105 @@ class UserAttendanceView(APIView):
             },
             'attendance_log':  paginated_data,
         }, status=status.HTTP_200_OK)
+
+
+class NotificationViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsSuperAdmin]
+    http_method_names  = ['get', 'post', 'delete']
+
+    def get_queryset(self):
+        return Notification.objects.select_related(
+            'sent_by', 'recipient', 'location'
+        ).order_by('-created_at')
+
+    def get_serializer_class(self):
+        if self.action == 'create':
+            return NotificationCreateSerializer
+        return NotificationSerializer
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.get_queryset()
+
+        # ── Stats ────────────────────────────────────────────────
+        stats = NotificationStatsSerializer({
+            'total_sent':       queryset.count(),
+            'delivered':        queryset.filter(status='sent').count(),
+            'active_locations': Location.objects.filter(status='active').count(),
+        }).data
+
+        # ── Recent notifications ──────────────────────────────────
+        recent     = queryset[:10]
+        serializer = NotificationSerializer(recent, many=True)
+
+        return Response({
+            'stats':                stats,
+            'recent_notifications': serializer.data,
+        }, status=status.HTTP_200_OK)
+
+    def create(self, request, *args, **kwargs):
+        serializer = NotificationCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        email    = serializer.validated_data.get('email')
+        location = serializer.validated_data.get('location')
+        message  = serializer.validated_data['message']
+
+        # ── Determine recipients ──────────────────────────────────
+        if email:
+            # Send to specific user
+            try:
+                recipients = [User.objects.get(email=email, is_active=True)]
+            except User.DoesNotExist:
+                return Response(
+                    {"error": "No active user found with this email."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+        else:
+            # Send to ALL active users except super_admin
+            recipients = list(User.objects.filter(
+                is_active=True
+            ).exclude(role='super_admin'))
+
+        # ── Send emails and save records ──────────────────────────
+        sent_count    = 0
+        failed_count  = 0
+
+        for recipient in recipients:
+            notification_status = 'sent'
+            try:
+                send_mail(
+                    subject        = "Salvation Tattoo Lounge — Notification",
+                    message        = message,
+                    from_email     = settings.DEFAULT_FROM_EMAIL,
+                    recipient_list = [recipient.email],
+                    fail_silently  = False,
+                )
+                sent_count += 1
+            except Exception as e:
+                print(f"Notification email failed for {recipient.email}: {e}")
+                notification_status = 'failed'
+                failed_count += 1
+
+            Notification.objects.create(
+                sent_by   = request.user,
+                recipient = recipient,
+                email     = recipient.email,
+                location  = location or recipient.location,
+                message   = message,
+                status    = notification_status,
+            )
+
+        return Response({
+            'message':      f'Notification sent to {sent_count} user(s). {failed_count} failed.',
+            'sent_count':   sent_count,
+            'failed_count': failed_count,
+            'total':        sent_count + failed_count,
+        }, status=status.HTTP_201_CREATED)
+
+    def destroy(self, request, *args, **kwargs):
+        notification = self.get_object()
+        notification.delete()
+        return Response(
+            {"message": "Notification deleted."},
+            status=status.HTTP_200_OK
+        )

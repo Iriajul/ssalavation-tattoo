@@ -212,15 +212,15 @@ class Instruction(models.Model):
  
 
 class SplashScreen(models.Model):
-    image_url  = models.URLField(blank=True, null=True)
-    updated_at = models.DateTimeField(auto_now=True)
+    web_image_url    = models.URLField(blank=True, null=True)
+    app_image_url    = models.URLField(blank=True, null=True)
+    updated_at       = models.DateTimeField(auto_now=True)
 
     class Meta:
         db_table = 'splash_screen'
 
     def __str__(self):
         return "Splash Screen"
-
 
 class FAQ(models.Model):
     question   = models.CharField(max_length=500)
@@ -367,3 +367,41 @@ class Attendance(models.Model):
 
     def __str__(self):
         return f"{self.user.email} - {self.date} - {self.status}"
+    
+
+class Notification(models.Model):
+
+    STATUS_CHOICES = (
+        ('sent',   'Sent'),
+        ('failed', 'Failed'),
+    )
+
+    sent_by   = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='sent_notifications'
+    )
+    recipient = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='received_notifications'
+    )
+    email     = models.EmailField()
+    location  = models.ForeignKey(
+        'Location',
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='notifications'
+    )
+    message   = models.TextField()
+    status    = models.CharField(max_length=10, choices=STATUS_CHOICES, default='sent')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'notifications'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"Notification to {self.email} — {self.status}"

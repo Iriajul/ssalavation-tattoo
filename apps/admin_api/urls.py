@@ -27,6 +27,7 @@ from .views import (
     QRCurrentView,
     QRGenerateView,
     BranchManagerLocationEmployeesView,
+    NotificationViewSet
 )
 
 router = DefaultRouter()
@@ -36,6 +37,7 @@ router.register(r'tasks',        TaskViewSet,        basename='task')
 router.register(r'instructions', InstructionViewSet, basename='instruction')
 router.register('app-content/faqs', FAQViewSet, basename='faqs')
 router.register('manager/tasks', BranchManagerTaskViewSet, basename='manager-tasks')
+router.register(r'notifications', NotificationViewSet, basename='notification')
 
 urlpatterns = [
     # ── Auth ──────────────────────────────────────────────────────

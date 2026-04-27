@@ -499,18 +499,34 @@ class TaskViewSet(viewsets.ModelViewSet):
         return Response(TaskDetailSerializer(task).data, status=status.HTTP_200_OK)
  
     def partial_update(self, request, *args, **kwargs):
-        task       = self.get_object()
+        task = self.get_object()
+
+        if task.status != 'pending':
+            return Response(
+                {"error": "Only pending tasks can be edited."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         serializer = self.get_serializer(task, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         task = serializer.save()
+
         return Response({
             'message': 'Task updated successfully.',
-            'task':    TaskDetailSerializer(task).data,
+            'task': TaskDetailSerializer(task).data,
         }, status=status.HTTP_200_OK)
  
     def destroy(self, request, *args, **kwargs):
         task = self.get_object()
+
+        if task.status != 'pending':
+            return Response(
+                {"error": "Only pending tasks can be deleted."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         task.delete()
+
         return Response(
             {"message": "Task deleted successfully."},
             status=status.HTTP_200_OK
@@ -854,7 +870,7 @@ class InstructionViewSet(viewsets.ModelViewSet):
 # APP CONTENT
 # ================================================================
 class SplashScreenView(APIView):
-    permission_classes = [IsSuperAdmin]
+    permission_classes = [AllowAny]
 
     def get(self, request):
         obj = SplashScreen.objects.first()

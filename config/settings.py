@@ -22,6 +22,7 @@ ALLOWED_HOSTS = [
     "10.10.13.10",
     "salvation-tattoo-jvai.vercel.app",
     "stm9wlhp-8000.inc1.devtunnels.ms",
+    
 ]
 
 # --------------------------------------------------

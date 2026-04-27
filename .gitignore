@@ -74,3 +74,4 @@ celeryd.pid
 # static files
 /static/
 /staticfiles/
+/seed_tasks.py

@@ -712,6 +712,8 @@ class QRSessionListSerializer(serializers.ModelSerializer):
     present_count    = serializers.IntegerField(read_only=True)
     late_count       = serializers.IntegerField(read_only=True)
     absent_count     = serializers.IntegerField(read_only=True)
+    location_name = serializers.CharField(source='location.name', read_only=True)
+    location_id   = serializers.IntegerField(source='location.id', read_only=True)
     interval_display = serializers.CharField(
         source='get_refresh_interval_display', read_only=True
     )
@@ -720,6 +722,8 @@ class QRSessionListSerializer(serializers.ModelSerializer):
         model  = QRSession
         fields = [
             'id', 'token', 'refresh_interval', 'interval_display',
+            'location_id',
+            'location_name',
             'expires_at', 'is_active', 'present_count',
             'late_count', 'absent_count', 'created_at',
         ]

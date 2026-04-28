@@ -2200,8 +2200,6 @@ class NotificationViewSet(viewsets.ModelViewSet):
         )
     
 
-from .permissions import IsBranchManager, IsSuperAdmin, IsClockInUser
-
 # ================================================================
 # SUPER ADMIN — QR SECTION
 # ================================================================

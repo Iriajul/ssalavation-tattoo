@@ -8,7 +8,6 @@ from datetime import timedelta
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 env = environ.Env(DEBUG=(bool, False))
-environ.Env.read_env(str(BASE_DIR / ".env"))
 
 # --------------------------------------------------
 # SECURITY
@@ -101,9 +100,9 @@ DATABASES = {
         "PASSWORD": env("DB_PASSWORD"),
         "HOST": env("DB_HOST", default="localhost"),
         "PORT": env("DB_PORT", default="5432"),
-        "OPTIONS": {
-            "options": "-c search_path=alex"
-        },
+        # "OPTIONS": {
+        #     "options": "-c search_path=alex"
+        # },
     }
 }
 

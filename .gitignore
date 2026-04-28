@@ -12,10 +12,9 @@ build/
 .eggs/
 scripts/
 # Migrations
-apps/*/migrations/*.py
+
 !apps/*/migrations/__init__.py
 # Migrations
-apps/*/migrations/
 
 # Settings
 

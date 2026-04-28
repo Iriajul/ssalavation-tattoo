@@ -19,7 +19,7 @@ from rest_framework_simplejwt.token_blacklist.models import OutstandingToken, Bl
 import secrets
 from django.db.models import Prefetch
 from .models import FAQ, Attendance, Location, QRSession, SplashScreen, UserWorkSchedule, Task, Instruction, ActivityLog,Notification
-from .permissions import IsBranchManager, IsSuperAdmin
+from .permissions import IsBranchManager, IsSuperAdmin,IsClockInUser
 from .serializers import (
     AdminChangePasswordSerializer,
     AdminProfileSerializer,
@@ -1505,150 +1505,150 @@ def deactivate_old_qr_sessions(location):
     ).update(is_active=False)
 
 
-class QRGenerateView(APIView):
-    permission_classes = [IsBranchManager]
+# class QRGenerateView(APIView):
+#     permission_classes = [IsBranchManager]
 
-    def post(self, request):
-        manager = request.user
+#     def post(self, request):
+#         manager = request.user
 
-        if not manager.location:
-            return Response(
-                {"error": "You are not assigned to any location."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+#         if not manager.location:
+#             return Response(
+#                 {"error": "You are not assigned to any location."},
+#                 status=status.HTTP_400_BAD_REQUEST
+#             )
 
-        refresh_interval = int(request.data.get('refresh_interval', 3))
-        valid_intervals  = [1, 3, 5, 10, 30]
+#         refresh_interval = int(request.data.get('refresh_interval', 3))
+#         valid_intervals  = [1, 3, 5, 10, 30]
 
-        if refresh_interval not in valid_intervals:
-            return Response(
-                {"error": f"Invalid interval. Choose from {valid_intervals}"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+#         if refresh_interval not in valid_intervals:
+#             return Response(
+#                 {"error": f"Invalid interval. Choose from {valid_intervals}"},
+#                 status=status.HTTP_400_BAD_REQUEST
+#             )
 
-        deactivate_old_qr_sessions(manager.location)
+#         deactivate_old_qr_sessions(manager.location)
 
-        qr_session = QRSession.objects.create(
-            location         = manager.location,
-            created_by       = manager,
-            token            = generate_qr_token(),
-            refresh_interval = refresh_interval,
-            expires_at       = timezone.now() + timedelta(minutes=refresh_interval),
-            is_active        = True,
-        )
+#         qr_session = QRSession.objects.create(
+#             location         = manager.location,
+#             created_by       = manager,
+#             token            = generate_qr_token(),
+#             refresh_interval = refresh_interval,
+#             expires_at       = timezone.now() + timedelta(minutes=refresh_interval),
+#             is_active        = True,
+#         )
 
-        return Response({
-            "message":    "QR session generated successfully.",
-            "qr_session": QRSessionSerializer(qr_session).data,
-        }, status=status.HTTP_201_CREATED)
-
-
-class QRCurrentView(APIView):
-    permission_classes = [IsBranchManager]
-
-    def get(self, request):
-        manager = request.user
-
-        if not manager.location:
-            return Response(
-                {"error": "You are not assigned to any location."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        qr_session = QRSession.objects.filter(
-            location=manager.location,
-            is_active=True
-        ).first()
-
-        if not qr_session:
-            return Response(
-                {"message": "No active QR session. Please generate one."},
-                status=status.HTTP_404_NOT_FOUND
-            )
-
-        if qr_session.is_expired:
-            qr_session.is_active = False
-            qr_session.save(update_fields=['is_active'])
-            return Response(
-                {"message": "QR session has expired. Please regenerate."},
-                status=status.HTTP_404_NOT_FOUND
-            )
-
-        return Response({
-            "qr_session":   QRSessionSerializer(qr_session).data,
-            "seconds_left": max(
-                0,
-                int((qr_session.expires_at - timezone.now()).total_seconds())
-            ),
-        }, status=status.HTTP_200_OK)
+#         return Response({
+#             "message":    "QR session generated successfully.",
+#             "qr_session": QRSessionSerializer(qr_session).data,
+#         }, status=status.HTTP_201_CREATED)
 
 
-class QRHistoryView(APIView):
-    permission_classes = [IsBranchManager]
+# class QRCurrentView(APIView):
+#     permission_classes = [IsBranchManager]
 
-    def get(self, request):
-        manager = request.user
+#     def get(self, request):
+#         manager = request.user
 
-        if not manager.location:
-            return Response(
-                {"error": "You are not assigned to any location."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+#         if not manager.location:
+#             return Response(
+#                 {"error": "You are not assigned to any location."},
+#                 status=status.HTTP_400_BAD_REQUEST
+#             )
 
-        sessions       = QRSession.objects.filter(
-            location=manager.location
-        ).order_by('-created_at')
+#         qr_session = QRSession.objects.filter(
+#             location=manager.location,
+#             is_active=True
+#         ).first()
 
-        paginator      = PageNumberPagination()
-        page           = paginator.paginate_queryset(sessions, request)
-        serializer     = QRSessionListSerializer(page, many=True)
-        paginated_data = paginator.get_paginated_response(serializer.data).data
+#         if not qr_session:
+#             return Response(
+#                 {"message": "No active QR session. Please generate one."},
+#                 status=status.HTTP_404_NOT_FOUND
+#             )
 
-        return Response({
-            "location": manager.location.name,
-            "history":  paginated_data,
-        }, status=status.HTTP_200_OK)
+#         if qr_session.is_expired:
+#             qr_session.is_active = False
+#             qr_session.save(update_fields=['is_active'])
+#             return Response(
+#                 {"message": "QR session has expired. Please regenerate."},
+#                 status=status.HTTP_404_NOT_FOUND
+#             )
 
-
-class QRSessionDetailView(APIView):
-    permission_classes = [IsBranchManager]
-
-    def get(self, request, pk):
-        manager = request.user
-
-        try:
-            qr_session = QRSession.objects.get(
-                pk=pk,
-                location=manager.location
-            )
-        except QRSession.DoesNotExist:
-            return Response(
-                {"error": "QR session not found."},
-                status=status.HTTP_404_NOT_FOUND
-            )
-
-        attendances = Attendance.objects.filter(
-            qr_session=qr_session
-        ).select_related('user', 'location')
-
-        return Response({
-            "qr_session":  QRSessionSerializer(qr_session).data,
-            "attendances": AttendanceSerializer(attendances, many=True).data,
-        }, status=status.HTTP_200_OK)
+#         return Response({
+#             "qr_session":   QRSessionSerializer(qr_session).data,
+#             "seconds_left": max(
+#                 0,
+#                 int((qr_session.expires_at - timezone.now()).total_seconds())
+#             ),
+#         }, status=status.HTTP_200_OK)
 
 
-class QRIntervalListView(APIView):
-    permission_classes = [IsBranchManager]
+# class QRHistoryView(APIView):
+#     permission_classes = [IsBranchManager]
 
-    def get(self, request):
-        intervals = [
-            {"value": 1,  "label": "Every 1 minute"},
-            {"value": 3,  "label": "Every 3 minutes"},
-            {"value": 5,  "label": "Every 5 minutes"},
-            {"value": 10, "label": "Every 10 minutes"},
-            {"value": 30, "label": "Every 30 minutes"},
-        ]
-        return Response({"intervals": intervals}, status=status.HTTP_200_OK)
+#     def get(self, request):
+#         manager = request.user
+
+#         if not manager.location:
+#             return Response(
+#                 {"error": "You are not assigned to any location."},
+#                 status=status.HTTP_400_BAD_REQUEST
+#             )
+
+#         sessions       = QRSession.objects.filter(
+#             location=manager.location
+#         ).order_by('-created_at')
+
+#         paginator      = PageNumberPagination()
+#         page           = paginator.paginate_queryset(sessions, request)
+#         serializer     = QRSessionListSerializer(page, many=True)
+#         paginated_data = paginator.get_paginated_response(serializer.data).data
+
+#         return Response({
+#             "location": manager.location.name,
+#             "history":  paginated_data,
+#         }, status=status.HTTP_200_OK)
+
+
+# class QRSessionDetailView(APIView):
+#     permission_classes = [IsBranchManager]
+
+#     def get(self, request, pk):
+#         manager = request.user
+
+#         try:
+#             qr_session = QRSession.objects.get(
+#                 pk=pk,
+#                 location=manager.location
+#             )
+#         except QRSession.DoesNotExist:
+#             return Response(
+#                 {"error": "QR session not found."},
+#                 status=status.HTTP_404_NOT_FOUND
+#             )
+
+#         attendances = Attendance.objects.filter(
+#             qr_session=qr_session
+#         ).select_related('user', 'location')
+
+#         return Response({
+#             "qr_session":  QRSessionSerializer(qr_session).data,
+#             "attendances": AttendanceSerializer(attendances, many=True).data,
+#         }, status=status.HTTP_200_OK)
+
+
+# class QRIntervalListView(APIView):
+#     permission_classes = [IsBranchManager]
+
+#     def get(self, request):
+#         intervals = [
+#             {"value": 1,  "label": "Every 1 minute"},
+#             {"value": 3,  "label": "Every 3 minutes"},
+#             {"value": 5,  "label": "Every 5 minutes"},
+#             {"value": 10, "label": "Every 10 minutes"},
+#             {"value": 30, "label": "Every 30 minutes"},
+#         ]
+#         return Response({"intervals": intervals}, status=status.HTTP_200_OK)
     
 
 
@@ -2198,3 +2198,212 @@ class NotificationViewSet(viewsets.ModelViewSet):
             {"message": "Notification deleted."},
             status=status.HTTP_200_OK
         )
+    
+
+from .permissions import IsBranchManager, IsSuperAdmin, IsClockInUser
+
+# ================================================================
+# SUPER ADMIN — QR SECTION
+# ================================================================
+
+class SuperAdminQRView(APIView):
+    """Super Admin generates and manages QR for any location"""
+    permission_classes = [IsSuperAdmin]
+
+    def get(self, request):
+        location_filter = request.query_params.get('location')
+
+        # ── Active QR sessions ────────────────────────────────────
+        active_sessions = QRSession.objects.filter(
+            is_active=True
+        ).select_related('location', 'created_by')
+
+        if location_filter:
+            active_sessions = active_sessions.filter(location_id=location_filter)
+
+        active_data = []
+        for session in active_sessions:
+            if session.is_expired:
+                session.is_active = False
+                session.save(update_fields=['is_active'])
+                continue
+            active_data.append({
+                "id":               session.id,
+                "token":            session.token,
+                "location":         session.location.name,
+                "location_id":      session.location.id,
+                "refresh_interval": session.refresh_interval,
+                "interval_display": session.get_refresh_interval_display(),
+                "created_at":       session.created_at,
+                "expires_at":       session.expires_at,
+                "seconds_left":     max(0, int((session.expires_at - timezone.now()).total_seconds())),
+                "present_count":    session.present_count,
+                "late_count":       session.late_count,
+                "absent_count":     session.absent_count,
+            })
+
+        # ── QR History ────────────────────────────────────────────
+        history = QRSession.objects.all().order_by('-created_at')
+        if location_filter:
+            history = history.filter(location_id=location_filter)
+
+        paginator      = PageNumberPagination()
+        page           = paginator.paginate_queryset(history, request)
+        serializer     = QRSessionListSerializer(page, many=True)
+        paginated_data = paginator.get_paginated_response(serializer.data).data
+
+        locations = Location.objects.filter(status='active').values('id', 'name')
+
+        return Response({
+            "active_sessions": active_data,
+            "history":         paginated_data,
+            "filter_options": {
+                "locations": list(locations),
+            }
+        }, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        """Generate QR for a specific location"""
+        location_id = request.data.get('location') or request.data.get('location_id')
+        if not location_id:
+            return Response(
+                {"error": "location is required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            location = Location.objects.get(id=location_id, status='active')
+        except Location.DoesNotExist:
+            return Response(
+                {"error": "Location not found."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        refresh_interval = int(request.data.get('refresh_interval', 3))
+        valid_intervals  = [1, 3, 5, 10, 30]
+
+        if refresh_interval not in valid_intervals:
+            return Response(
+                {"error": f"Invalid interval. Choose from {valid_intervals}"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        deactivate_old_qr_sessions(location)
+
+        qr_session = QRSession.objects.create(
+            location         = location,
+            created_by       = request.user,
+            token            = generate_qr_token(),
+            refresh_interval = refresh_interval,
+            expires_at       = timezone.now() + timedelta(minutes=refresh_interval),
+            is_active        = True,
+        )
+
+        return Response({
+            "message":    "QR session generated successfully.",
+            "qr_session": QRSessionSerializer(qr_session).data,
+        }, status=status.HTTP_201_CREATED)
+
+
+class SuperAdminQRDetailView(APIView):
+    """View attendance details for a specific QR session"""
+    permission_classes = [IsSuperAdmin]
+
+    def get(self, request, pk):
+        try:
+            qr_session = QRSession.objects.get(pk=pk)
+        except QRSession.DoesNotExist:
+            return Response(
+                {"error": "QR session not found."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        attendances = Attendance.objects.filter(
+            qr_session=qr_session
+        ).select_related('user', 'location')
+
+        return Response({
+            "qr_session":  QRSessionSerializer(qr_session).data,
+            "attendances": AttendanceSerializer(attendances, many=True).data,
+        }, status=status.HTTP_200_OK)
+
+
+class SuperAdminQRIntervalListView(APIView):
+    """Get list of available QR refresh intervals"""
+    permission_classes = [IsSuperAdmin]
+
+    def get(self, request):
+        intervals = [
+            {"value": 1,  "label": "Every 1 minute"},
+            {"value": 3,  "label": "Every 3 minutes"},
+            {"value": 5,  "label": "Every 5 minutes"},
+            {"value": 10, "label": "Every 10 minutes"},
+            {"value": 30, "label": "Every 30 minutes"},
+        ]
+        return Response({"intervals": intervals}, status=status.HTTP_200_OK)
+
+
+# ================================================================
+# CLOCK IN USER — VIEW QR
+# ================================================================
+
+class ClockInUserQRView(APIView):
+    """Clock-in user sees current active QR for their location"""
+    permission_classes = [IsClockInUser]
+
+    def get(self, request):
+        user = request.user
+
+        if not user.location:
+            return Response(
+                {"error": "You are not assigned to any location."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        qr_session = QRSession.objects.filter(
+            location  = user.location,
+            is_active = True
+        ).first()
+
+        if not qr_session:
+            return Response({
+                "message":      "No active QR session. Please contact admin.",
+                "qr_session":   None,
+                "location":     user.location.name,
+                "seconds_left": 0,
+            }, status=status.HTTP_200_OK)
+
+        if qr_session.is_expired:
+            qr_session.is_active = False
+            qr_session.save(update_fields=['is_active'])
+            return Response({
+                "message":      "QR session has expired. Please contact admin.",
+                "qr_session":   None,
+                "location":     user.location.name,
+                "seconds_left": 0,
+            }, status=status.HTTP_200_OK)
+
+        seconds_left = max(
+            0,
+            int((qr_session.expires_at - timezone.now()).total_seconds())
+        )
+
+        return Response({
+            "message":  "Active QR session found.",
+            "location": user.location.name,
+            "user": {
+                "id":    user.id,
+                "name":  f"{user.first_name} {user.last_name}".strip(),
+                "email": user.email,
+                "role":  user.get_role_display(),
+            },
+            "qr_session": {
+                "id":               qr_session.id,
+                "token":            qr_session.token,
+                "refresh_interval": qr_session.refresh_interval,
+                "interval_display": qr_session.get_refresh_interval_display(),
+                "created_at":       qr_session.created_at,
+                "expires_at":       qr_session.expires_at,
+            },
+            "seconds_left": seconds_left,
+        }, status=status.HTTP_200_OK)

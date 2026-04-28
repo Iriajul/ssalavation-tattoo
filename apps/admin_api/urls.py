@@ -11,8 +11,8 @@ from .views import (
     FAQViewSet,
     ForgotPasswordView,
     PerformanceAnalyticsView,
-    QRIntervalListView,
-    QRSessionDetailView,
+    # QRIntervalListView,
+    # QRSessionDetailView,
     ReportsAnalyticsView,
     SplashScreenView,
     UserAttendanceView,
@@ -23,9 +23,13 @@ from .views import (
     TaskViewSet,
     LocationEmployeesView,
     InstructionViewSet,
-    QRHistoryView,
-    QRCurrentView,
-    QRGenerateView,
+    # QRHistoryView,
+    # QRCurrentView,
+    # QRGenerateView,
+    SuperAdminQRView,
+    SuperAdminQRDetailView,
+    SuperAdminQRIntervalListView,
+    ClockInUserQRView,
     BranchManagerLocationEmployeesView,
     NotificationViewSet
 )
@@ -51,11 +55,19 @@ urlpatterns = [
     path('reports/', ReportsAnalyticsView.as_view(), name='reports-analytics'),
     path('dashboard/', DashboardView.as_view(), name='dashboard'),
     # ── Branch Manager — QR Attendance ────────────────────────────
-    path('manager/qr/generate/',        QRGenerateView.as_view(),      name='qr-generate'),
-    path('manager/qr/current/',         QRCurrentView.as_view(),       name='qr-current'),
-    path('manager/qr/history/',         QRHistoryView.as_view(),       name='qr-history'),
-    path('manager/qr/<int:pk>/details/', QRSessionDetailView.as_view(), name='qr-details'),
-    path('manager/qr/intervals/', QRIntervalListView.as_view(), name='qr-intervals'),
+    #── Super Admin QR ────────────────────────────────────────────
+    path('qr/',                    SuperAdminQRView.as_view(),          name='super-admin-qr'),
+    path('qr/<int:pk>/details/',   SuperAdminQRDetailView.as_view(),    name='super-admin-qr-details'),
+    path('qr/intervals/',          SuperAdminQRIntervalListView.as_view(), name='qr-intervals'),
+
+    # ── Clock In User QR ──────────────────────────────────────────
+    path('clock-in/qr/',           ClockInUserQRView.as_view(),         name='clock-in-user-qr'),
+
+    # path('manager/qr/generate/',        QRGenerateView.as_view(),      name='qr-generate'),
+    # path('manager/qr/current/',         QRCurrentView.as_view(),       name='qr-current'),
+    # path('manager/qr/history/',         QRHistoryView.as_view(),       name='qr-history'),
+    # path('manager/qr/<int:pk>/details/', QRSessionDetailView.as_view(), name='qr-details'),
+    # path('manager/qr/intervals/', QRIntervalListView.as_view(), name='qr-intervals'),
     path('manager/employees/', BranchManagerLocationEmployeesView.as_view(), name='manager-employees'),
     path('manager/verifications/', BranchManagerVerificationView.as_view(), name='manager-verifications'),
     path('users-attendance/', UserAttendanceView.as_view(), name='users-attendance'),

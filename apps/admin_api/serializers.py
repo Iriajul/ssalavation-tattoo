@@ -824,3 +824,24 @@ class NotificationSerializer(serializers.ModelSerializer):
         if obj.sent_by:
             return f"{obj.sent_by.first_name} {obj.sent_by.last_name}".strip() or obj.sent_by.username
         return None
+
+
+
+class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
+    def validate(self, attrs):
+        data = super().validate(attrs)
+        user = self.user
+
+        # ← add clock_in_user
+        if user.role not in ['super_admin', 'district_manager', 'branch_manager', 'clock_in_user']:
+            raise serializers.ValidationError("Access denied. Invalid admin role.")
+
+        data['user'] = {
+            'id':             user.id,
+            'email':          user.email,
+            'username':       user.username,
+            'role':           user.role,
+            'role_display':   user.get_role_display(),
+            'is_super_admin': user.is_super_admin(),
+        }
+        return data

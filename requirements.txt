@@ -10,7 +10,7 @@ click-plugins==1.1.1.2
 click-repl==0.3.0
 cloudinary==1.44.1
 cron-descriptor==1.4.5
-Django==6.0.3
+Django==6.0.4
 django-celery-beat==2.9.0
 django-cloudinary-storage==0.3.0
 django-cors-headers==4.9.0

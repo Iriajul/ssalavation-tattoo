@@ -15,6 +15,7 @@ class User(AbstractUser):
         ('tattoo_artist',    'Tattoo Artist'),
         ('body_piercer',     'Body Piercer'),
         ('staff',            'Staff'),
+        ('clock_in_user',    'Clock In User'),
     )
 
     email     = models.EmailField(unique=True, blank=False, null=False)

@@ -48,3 +48,16 @@ class IsAdminOrBranchManager(BasePermission):
             and request.user.is_authenticated
             and request.user.role in ['super_admin', 'branch_manager']
         )
+    
+class IsClockInUser(BasePermission):
+    """Allow access only to clock_in_user role"""
+    message = "Access denied. Clock In User only."
+
+    def has_permission(self, request, view):
+        return (
+            request.user
+            and request.user.is_authenticated
+            and request.user.role == 'clock_in_user'
+        )
+
+

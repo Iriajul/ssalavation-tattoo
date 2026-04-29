@@ -19,6 +19,7 @@ ALLOWED_HOSTS = [
     "127.0.0.1",
     "localhost",
     "10.10.13.10",
+    "177.7.37.239",
     "salvation-tattoo-jvai.vercel.app",
     "stm9wlhp-8000.inc1.devtunnels.ms",
     

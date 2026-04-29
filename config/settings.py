@@ -17,6 +17,7 @@ env = environ.Env(DEBUG=(bool, False))
 SECRET_KEY = env("SECRET_KEY")
 DEBUG = env.bool("DEBUG", default=True)
 
+# Host for production
 ALLOWED_HOSTS = [
     "127.0.0.1",
     "localhost",

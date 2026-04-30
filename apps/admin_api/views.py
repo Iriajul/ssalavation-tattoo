@@ -17,7 +17,7 @@ from rest_framework_simplejwt.tokens import RefreshToken, UntypedToken
 from rest_framework_simplejwt.exceptions import InvalidToken
 from rest_framework_simplejwt.token_blacklist.models import OutstandingToken, BlacklistedToken
 import secrets
-from django.db.models import Prefetch
+from django.db.models import Prefetch,Q
 from .models import FAQ, Attendance, Location, QRSession, SplashScreen, UserWorkSchedule, Task, Instruction, ActivityLog,Notification
 from .permissions import IsBranchManager, IsSuperAdmin,IsClockInUser
 from .serializers import (
@@ -25,6 +25,7 @@ from .serializers import (
     AdminProfileSerializer,
     AttendanceSerializer,
     BranchManagerTaskCreateSerializer,
+    BranchManagerTaskListSerializer,
     CustomTokenObtainPairSerializer,
     FAQSerializer,
     ForgotPasswordSerializer,
@@ -1650,6 +1651,141 @@ def deactivate_old_qr_sessions(location):
 #         ]
 #         return Response({"intervals": intervals}, status=status.HTTP_200_OK)
     
+class BranchManagerDashboardView(APIView):
+    """
+    GET /api/admin/branch-manager/dashboard/
+    Branch manager sees only their location data
+    """
+    permission_classes = [IsBranchManager]
+ 
+    def get(self, request):
+        manager  = request.user
+        location = manager.location
+ 
+        if not location:
+            return Response(
+                {"error": "You are not assigned to any location."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+ 
+        today = timezone.localdate()
+        now   = timezone.now()
+ 
+        # ── Greeting ──────────────────────────────────────────────
+        hour = now.hour
+        if hour < 12:
+            greeting_time = "Good morning"
+        elif hour < 17:
+            greeting_time = "Good afternoon"
+        else:
+            greeting_time = "Good evening"
+ 
+        greeting = f"{greeting_time}, {manager.first_name or 'Store Manager'} 👋"
+ 
+        # ── Stats ─────────────────────────────────────────────────
+        # Total employees at this location
+        total_employees = User.objects.filter(
+            location  = location,
+            role__in  = EMPLOYEE_ROLES,
+            is_active = True
+        ).count()
+ 
+        # Pending verifications = tasks awaiting review at this location
+        pending_verifications = Task.objects.filter(
+            location = location,
+            status   = 'awaiting_review'
+        ).count()
+ 
+        # ── Today's attendance ────────────────────────────────────
+        today_records   = Attendance.objects.filter(
+            location = location,
+            date     = today
+        )
+        present_count   = today_records.filter(status='present').count()
+        late_count      = today_records.filter(status='late').count()
+        absent_count    = today_records.filter(status='absent').count()
+        total_today     = total_employees
+ 
+        today_attendance = {
+            'total':   total_today,
+            'present': present_count,
+            'late':    late_count,
+            'absent':  absent_count,
+        }
+ 
+        # ── Today's staff ─────────────────────────────────────────
+        employees  = User.objects.filter(
+            location  = location,
+            role__in  = EMPLOYEE_ROLES,
+            is_active = True
+        ).select_related('location')
+ 
+        today_staff = []
+        for emp in employees:
+            attendance = Attendance.objects.filter(
+                user = emp,
+                date = today
+            ).first()
+ 
+            # Get late minutes if late
+            late_minutes = None
+            if attendance and attendance.status == 'late' and attendance.clock_in:
+                # Calculate how late (assuming 9AM start)
+                from datetime import time as dt_time
+                scheduled   = dt_time(9, 0)
+                clock_in    = attendance.clock_in
+                if clock_in > scheduled:
+                    diff        = (
+                        clock_in.hour * 60 + clock_in.minute
+                    ) - (
+                        scheduled.hour * 60 + scheduled.minute
+                    )
+                    late_minutes = diff
+ 
+            today_staff.append({
+                'id':          emp.id,
+                'name':        f"{emp.first_name} {emp.last_name}".strip(),
+                'role':        emp.get_role_display(),
+                'status':      attendance.status if attendance else 'absent',
+                'late_minutes': late_minutes,
+                'clock_in':    attendance.clock_in.strftime('%I:%M %p') if attendance and attendance.clock_in else None,
+            })
+ 
+        # ── Recent task activity ──────────────────────────────────
+        recent_tasks_qs = Task.objects.filter(
+            location = location
+        ).select_related('assigned_to').order_by('-created_at')[:5]
+ 
+        recent_tasks = []
+        for task in recent_tasks_qs:
+            recent_tasks.append({
+                'id':            task.id,
+                'title':         task.title,
+                'assigned_to':   f"{task.assigned_to.first_name} {task.assigned_to.last_name}".strip(),
+                'due_date':      task.due_date.strftime('%b %d, %Y') if task.due_date else None,
+                'status':        task.status,
+                'status_display': {
+                    'pending':         'Pending',
+                    'completed':       'Completed',
+                    'awaiting_review': 'Awaiting Review',
+                    'approved':        'Approved',
+                    'rejected':        'Rejected',
+                    'overdue':         'Overdue',
+                }.get(task.status, task.status),
+            })
+ 
+        return Response({
+            'greeting':             greeting,
+            'date_display':         today.strftime('%A, %B %d, %Y'),
+            'location_name':        location.name,
+            'stats': {
+                'total_employees':       total_employees,
+                'pending_verifications': pending_verifications,
+                'today_attendance':      today_attendance,
+            },
+            'today_staff':   today_staff,
+            'recent_tasks':  recent_tasks,
+        }, status=status.HTTP_200_OK)
 
 
 class BranchManagerTaskViewSet(viewsets.ModelViewSet):
@@ -1660,18 +1796,22 @@ class BranchManagerTaskViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         manager  = self.request.user
 
-        # ── Only tasks for manager's location ─────────────────────
         queryset = Task.objects.filter(
-            location=manager.location
+            location = manager.location,
+            status   = 'pending'          # ← only pending tasks
         ).select_related(
             'location', 'assigned_to', 'completed_by',
             'approved_by', 'rejected_by', 'created_by'
         ).order_by('-created_at')
 
-        # ── Status filter ─────────────────────────────────────────
-        status_filter = self.request.query_params.get('status')
-        if status_filter:
-            queryset = queryset.filter(status=status_filter)
+        search = self.request.query_params.get('search')
+        if search:
+            queryset = queryset.filter(
+                Q(title__icontains=search) |
+                Q(description__icontains=search) |
+                Q(assigned_to__first_name__icontains=search) |
+                Q(assigned_to__last_name__icontains=search)
+            )
 
         return queryset
 
@@ -1681,22 +1821,12 @@ class BranchManagerTaskViewSet(viewsets.ModelViewSet):
         if self.action in ['update', 'partial_update']:
             return TaskUpdateSerializer
         if self.action == 'list':
-            return TaskListSerializer
+            return BranchManagerTaskListSerializer  # ← use new serializer
         return TaskDetailSerializer
 
     def list(self, request, *args, **kwargs):
         manager  = request.user
         queryset = self.filter_queryset(self.get_queryset())
-
-        # ── Stats for this location only ──────────────────────────
-        location_tasks = Task.objects.filter(location=manager.location)
-        stats = {
-            'all':            location_tasks.count(),
-            'pending':        location_tasks.filter(status='pending').count(),
-            'awaiting_review': location_tasks.filter(status='completed').count(),
-            'approved':       location_tasks.filter(status='approved').count(),
-            'overdue':        location_tasks.filter(status='overdue').count(),
-        }
 
         page = self.paginate_queryset(queryset)
         if page is not None:
@@ -1704,14 +1834,12 @@ class BranchManagerTaskViewSet(viewsets.ModelViewSet):
             paginated_data = self.get_paginated_response(serializer.data)
             return Response({
                 'location': manager.location.name if manager.location else None,
-                'stats':    stats,
                 'tasks':    paginated_data.data,
             }, status=status.HTTP_200_OK)
 
         serializer = self.get_serializer(queryset, many=True)
         return Response({
             'location': manager.location.name if manager.location else None,
-            'stats':    stats,
             'tasks':    serializer.data,
         }, status=status.HTTP_200_OK)
 
@@ -1870,6 +1998,8 @@ class BranchManagerVerificationView(APIView):
             'awaiting_review': base_tasks.filter(status='completed').count(),
             'approved':        base_tasks.filter(status='approved').count(),
             'rejected':        base_tasks.filter(status='rejected').count(),
+            'overdue':         base_tasks.filter(status='overdue').count(),
+            'pending':         base_tasks.filter(status='pending').count(),
         }
 
         # ── Tab filter ─────────────────────────────────────────────

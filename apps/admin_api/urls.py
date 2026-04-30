@@ -5,6 +5,7 @@ from .views import (
     AdminChangePasswordView,
     AdminLoginView,
     AdminProfileView,
+    BranchManagerDashboardView,
     BranchManagerTaskViewSet,
     BranchManagerVerificationView,
     DashboardView,
@@ -55,6 +56,7 @@ urlpatterns = [
     path('reports/', ReportsAnalyticsView.as_view(), name='reports-analytics'),
     path('dashboard/', DashboardView.as_view(), name='dashboard'),
     # ── Branch Manager — QR Attendance ────────────────────────────
+    path('branch-manager/dashboard/', BranchManagerDashboardView.as_view(), name='branch-manager-dashboard'),
     #── Super Admin QR ────────────────────────────────────────────
     path('qr/',                    SuperAdminQRView.as_view(),          name='super-admin-qr'),
     path('qr/<int:pk>/details/',   SuperAdminQRDetailView.as_view(),    name='super-admin-qr-details'),

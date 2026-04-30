@@ -22,7 +22,8 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         data = super().validate(attrs)
         user = self.user
 
-        if user.role not in ['super_admin', 'district_manager', 'branch_manager']:
+        # ← add clock_in_user
+        if user.role not in ['super_admin', 'district_manager', 'branch_manager', 'clock_in_user']:
             raise serializers.ValidationError("Access denied. Invalid admin role.")
 
         data['user'] = {
@@ -749,6 +750,30 @@ class AttendanceSerializer(serializers.ModelSerializer):
         return f"{obj.user.first_name} {obj.user.last_name}".strip()
     
 
+
+class BranchManagerDashboardSerializer(serializers.Serializer):
+    """Branch manager dashboard response"""
+ 
+    # Greeting
+    greeting      = serializers.CharField()
+    date_display  = serializers.CharField()
+    location_name = serializers.CharField()
+ 
+    # Stats
+    total_employees       = serializers.IntegerField()
+    pending_verifications = serializers.IntegerField()
+ 
+    # Attendance
+    today_attendance = serializers.DictField()
+ 
+    # Today's staff
+    today_staff = serializers.ListField()
+ 
+    # Recent task activity
+    recent_tasks = serializers.ListField()
+ 
+    
+
 class BranchManagerTaskCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model  = Task
@@ -783,6 +808,34 @@ class BranchManagerTaskCreateSerializer(serializers.ModelSerializer):
             data['frequency'] = 'none'
 
         return data
+    
+class BranchManagerTaskListSerializer(serializers.ModelSerializer):
+    assigned_to_name = serializers.SerializerMethodField()
+    assigned_to_role = serializers.CharField(
+        source='assigned_to.get_role_display', read_only=True
+    )
+    submitted_at     = serializers.DateTimeField(
+        source='created_at', format='%m/%d/%Y', read_only=True
+    )
+    can_edit         = serializers.SerializerMethodField()
+
+    class Meta:
+        model  = Task
+        fields = [
+            'id', 'title', 'description',
+            'assigned_to', 'assigned_to_name', 'assigned_to_role',
+            'due_date', 'status', 'submitted_at',
+            'is_recurring', 'frequency',
+            'requires_photo',
+            'can_edit',
+        ]
+
+    def get_assigned_to_name(self, obj):
+        return f"{obj.assigned_to.first_name} {obj.assigned_to.last_name}".strip()
+
+    def get_can_edit(self, obj):
+        return obj.status == 'pending'
+    
 
 class NotificationStatsSerializer(serializers.Serializer):
     total_sent       = serializers.IntegerField()
@@ -829,23 +882,3 @@ class NotificationSerializer(serializers.ModelSerializer):
             return f"{obj.sent_by.first_name} {obj.sent_by.last_name}".strip() or obj.sent_by.username
         return None
 
-
-
-class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
-    def validate(self, attrs):
-        data = super().validate(attrs)
-        user = self.user
-
-        # ← add clock_in_user
-        if user.role not in ['super_admin', 'district_manager', 'branch_manager', 'clock_in_user']:
-            raise serializers.ValidationError("Access denied. Invalid admin role.")
-
-        data['user'] = {
-            'id':             user.id,
-            'email':          user.email,
-            'username':       user.username,
-            'role':           user.role,
-            'role_display':   user.get_role_display(),
-            'is_super_admin': user.is_super_admin(),
-        }
-        return data

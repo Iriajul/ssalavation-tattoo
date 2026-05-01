@@ -11,7 +11,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 env = environ.Env(DEBUG=(bool, False))
 
-#environ.Env.read_env(str(BASE_DIR / ".env"))
+# environ.Env.read_env(str(BASE_DIR / ".env"))
 
 # --------------------------------------------------
 # SECURITY
@@ -162,6 +162,7 @@ CSRF_TRUSTED_ORIGINS = [
     "https://www.hirenearbylocals.com",
     "https://stm9wlhp-8000.inc1.devtunnels.ms",
     "https://salvation-tattoo-jvai.vercel.app",
+    "http://localhost:3000",
 ]
 
 # --------------------------------------------------

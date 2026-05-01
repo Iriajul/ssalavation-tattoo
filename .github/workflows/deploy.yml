@@ -3,7 +3,7 @@ name: Deploy Django Backend to VPS
 on:
   push:
     branches:
-      - main   # change if you use another branch
+      - main   
 
 jobs:
   deploy:

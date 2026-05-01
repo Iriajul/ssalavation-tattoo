@@ -508,15 +508,23 @@ class TaskViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        # ── Only branch manager who created it can edit ───────────
+        if task.created_by != request.user:
+            return Response(
+                {"error": "You can only edit tasks you created."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
         serializer = self.get_serializer(task, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         task = serializer.save()
 
         return Response({
             'message': 'Task updated successfully.',
-            'task': TaskDetailSerializer(task).data,
+            'task':    TaskDetailSerializer(task).data,
         }, status=status.HTTP_200_OK)
- 
+
+
     def destroy(self, request, *args, **kwargs):
         task = self.get_object()
 
@@ -526,30 +534,35 @@ class TaskViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        task.delete()
+        # ── Only branch manager who created it can delete ─────────
+        if task.created_by != request.user:
+            return Response(
+                {"error": "You can only delete tasks you created."},
+                status=status.HTTP_403_FORBIDDEN
+            )
 
+        task.delete()
         return Response(
             {"message": "Task deleted successfully."},
             status=status.HTTP_200_OK
         )
  
-    # ── Approve ───────────────────────────────────────────────────
     @action(detail=True, methods=['post'], url_path='approve')
     def approve(self, request, pk=None):
         task = self.get_object()
- 
-        if task.status not in ['completed', 'awaiting_review', 'rejected']:
+
+        if task.status not in ['awaiting_review', 'rejected']:
             return Response(
-                {"error": "Only completed, awaiting review or rejected tasks can be approved."},
+                {"error": "Only awaiting review or rejected tasks can be approved."},
                 status=status.HTTP_400_BAD_REQUEST
             )
- 
+
         task.status           = 'approved'
         task.approved_by      = request.user
         task.approved_at      = timezone.now()
         task.rejection_reason = None
         task.save(update_fields=['status', 'approved_by', 'approved_at', 'rejection_reason'])
- 
+
         ActivityLog.objects.create(
             action      = 'task_approved',
             actor       = request.user,
@@ -557,31 +570,31 @@ class TaskViewSet(viewsets.ModelViewSet):
             target_user = task.assigned_to,
             message     = f'Task "{task.title}" approved for {task.assigned_to.get_full_name()}'
         )
- 
+
         return Response({
             'message': 'Task approved successfully.',
             'task':    TaskDetailSerializer(task).data,
         }, status=status.HTTP_200_OK)
- 
-    # ── Reject ────────────────────────────────────────────────────
+
+
     @action(detail=True, methods=['post'], url_path='reject')
     def reject(self, request, pk=None):
         task       = self.get_object()
         serializer = TaskRejectSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
- 
-        if task.status not in ['completed', 'awaiting_review', 'approved']:
+
+        if task.status not in ['awaiting_review', 'approved']:
             return Response(
-                {"error": "Only completed, awaiting review or approved tasks can be rejected."},
+                {"error": "Only awaiting review or approved tasks can be rejected."},
                 status=status.HTTP_400_BAD_REQUEST
             )
- 
+
         task.status           = 'rejected'
         task.rejected_by      = request.user
         task.rejected_at      = timezone.now()
         task.rejection_reason = serializer.validated_data['rejection_reason']
         task.save(update_fields=['status', 'rejected_by', 'rejected_at', 'rejection_reason'])
- 
+
         ActivityLog.objects.create(
             action      = 'task_rejected',
             actor       = request.user,
@@ -589,7 +602,7 @@ class TaskViewSet(viewsets.ModelViewSet):
             target_user = task.assigned_to,
             message     = f'Task "{task.title}" rejected — {serializer.validated_data["rejection_reason"]}'
         )
- 
+
         return Response({
             'message': 'Task rejected.',
             'task':    TaskDetailSerializer(task).data,
@@ -1650,6 +1663,67 @@ def deactivate_old_qr_sessions(location):
 #             {"value": 30, "label": "Every 30 minutes"},
 #         ]
 #         return Response({"intervals": intervals}, status=status.HTTP_200_OK)
+
+class BranchManagerProfileView(APIView):
+    permission_classes = [IsBranchManager]
+
+    def get(self, request):
+        manager = request.user
+
+        return Response({
+            'id':           manager.id,
+            'first_name':   manager.first_name,
+            'last_name':    manager.last_name,
+            'full_name':    manager.get_full_name(),
+            'username':     manager.username,
+            'email':        manager.email,
+            'phone':        manager.phone,
+            'role':         manager.role,
+            'role_display': manager.get_role_display(),
+            'profile_photo': manager.profile_photo,
+            'location': {
+                'id':           manager.location.id,
+                'name':         manager.location.name,
+                'street_address': manager.location.street_address,
+                'city_state':   manager.location.city_state,
+                'status':       manager.location.status,
+            } if manager.location else None,
+            'date_joined':  manager.date_joined,
+            'last_login':   manager.last_login,
+        }, status=status.HTTP_200_OK)
+
+    def patch(self, request):
+        manager = request.user
+
+        # Only allow updating these fields
+        allowed_fields = ['first_name', 'last_name', 'phone', 'profile_photo']
+
+        for field in allowed_fields:
+            if field in request.data:
+                setattr(manager, field, request.data[field])
+
+        manager.save()
+
+        return Response({
+            'message':  'Profile updated successfully.',
+            'id':           manager.id,
+            'first_name':   manager.first_name,
+            'last_name':    manager.last_name,
+            'full_name':    manager.get_full_name(),
+            'username':     manager.username,
+            'email':        manager.email,
+            'phone':        manager.phone,
+            'role':         manager.role,
+            'role_display': manager.get_role_display(),
+            'profile_photo': manager.profile_photo,
+            'location': {
+                'id':             manager.location.id,
+                'name':           manager.location.name,
+                'street_address': manager.location.street_address,
+                'city_state':     manager.location.city_state,
+                'status':         manager.location.status,
+            } if manager.location else None,
+        }, status=status.HTTP_200_OK)
     
 class BranchManagerDashboardView(APIView):
     """
@@ -1794,11 +1868,11 @@ class BranchManagerTaskViewSet(viewsets.ModelViewSet):
     search_fields      = ['title', 'description', 'assigned_to__first_name', 'assigned_to__last_name']
 
     def get_queryset(self):
-        manager  = self.request.user
+        manager = self.request.user
 
+        # ── All tasks for manager's location — no status filter here
         queryset = Task.objects.filter(
-            location = manager.location,
-            status   = 'pending'          # ← only pending tasks
+            location=manager.location
         ).select_related(
             'location', 'assigned_to', 'completed_by',
             'approved_by', 'rejected_by', 'created_by'
@@ -1826,7 +1900,11 @@ class BranchManagerTaskViewSet(viewsets.ModelViewSet):
 
     def list(self, request, *args, **kwargs):
         manager  = request.user
-        queryset = self.filter_queryset(self.get_queryset())
+
+        # ── List only shows pending tasks ─────────────────────────
+        queryset = self.filter_queryset(
+            self.get_queryset().filter(status='pending')
+        )
 
         page = self.paginate_queryset(queryset)
         if page is not None:
@@ -1889,9 +1967,9 @@ class BranchManagerTaskViewSet(viewsets.ModelViewSet):
     def approve(self, request, pk=None):
         task = self.get_object()
 
-        if task.status not in ['completed', 'rejected']:
+        if task.status not in ['awaiting_review', 'rejected']:
             return Response(
-                {"error": "Only completed or previously rejected tasks can be approved."},
+                {"error": "Only awaiting review or rejected tasks can be approved."},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
@@ -1920,12 +1998,11 @@ class BranchManagerTaskViewSet(viewsets.ModelViewSet):
         serializer = TaskRejectSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        if task.status not in ['completed', 'approved']:
+        if task.status not in ['awaiting_review', 'approved']:
             return Response(
-                {"error": "Only completed or approved tasks can be rejected."},
+                {"error": "Only awaiting review or approved tasks can be rejected."},
                 status=status.HTTP_400_BAD_REQUEST
             )
-
         task.status           = 'rejected'
         task.rejected_by      = request.user
         task.rejected_at      = timezone.now()
@@ -1991,32 +2068,47 @@ class BranchManagerVerificationView(APIView):
         # ── Base queryset — only this location's tasks ─────────────
         base_tasks = Task.objects.filter(
             location=manager.location
-        ).select_related('assigned_to', 'approved_by', 'rejected_by')
+        ).select_related(
+            'assigned_to', 'approved_by',
+            'rejected_by', 'created_by'
+        )
 
         # ── Stats ──────────────────────────────────────────────────
         stats = {
-            'awaiting_review': base_tasks.filter(status='completed').count(),
+            'awaiting_review': base_tasks.filter(status='awaiting_review').count(),
             'approved':        base_tasks.filter(status='approved').count(),
-            'rejected':        base_tasks.filter(status='rejected').count(),
-            'overdue':         base_tasks.filter(status='overdue').count(),
             'pending':         base_tasks.filter(status='pending').count(),
+            'overdue':         base_tasks.filter(status='overdue').count(),
+            'rejected':        base_tasks.filter(status='rejected').count(),
         }
 
         # ── Tab filter ─────────────────────────────────────────────
-        if tab == 'resolved':
-            tasks = base_tasks.filter(status__in=['approved', 'rejected'])
-        else:
-            # pending tab = awaiting review = completed by employee
-            tasks = base_tasks.filter(status='completed')
+        TAB_STATUS_MAP = {
+            'pending':         'pending',
+            'awaiting_review': 'awaiting_review',
+            'approved':        'approved',
+            'rejected':        'rejected',
+            'overdue':         'overdue',
+        }
 
-        tasks = tasks.order_by('-completed_at')
+        selected_status = TAB_STATUS_MAP.get(tab, 'pending')
+        tasks           = base_tasks.filter(
+            status=selected_status
+        ).order_by('-created_at')
 
         # ── Paginate ───────────────────────────────────────────────
-        paginator  = PageNumberPagination()
-        page       = paginator.paginate_queryset(tasks, request)
+        paginator = PageNumberPagination()
+        page      = paginator.paginate_queryset(tasks, request)
 
         data = []
         for task in page:
+            # ── Can edit/delete — only if branch manager created it
+            # AND task is pending
+            can_edit = (
+                task.created_by == manager and
+                task.status == 'pending'
+            )
+
             data.append({
                 'id':             task.id,
                 'title':          task.title,
@@ -2024,25 +2116,50 @@ class BranchManagerVerificationView(APIView):
                 'requires_photo': task.requires_photo,
                 'photo_url':      task.photo_url,
                 'status':         task.status,
+                'due_date':       task.due_date,
+                'location_name':  task.location.name if task.location else None,
+
+                # Created/assigned by
+                'created_by': {
+                    'id':   task.created_by.id if task.created_by else None,
+                    'name': f"{task.created_by.first_name} {task.created_by.last_name}".strip()
+                            if task.created_by else None,
+                    'role': task.created_by.get_role_display()
+                            if task.created_by else None,
+                },
+
+                # Employee assigned to
                 'assigned_to': {
                     'id':    task.assigned_to.id,
                     'name':  f"{task.assigned_to.first_name} {task.assigned_to.last_name}".strip(),
+                    'role':  task.assigned_to.get_role_display(),
                     'email': task.assigned_to.email,
                 },
-                'completed_at':      task.completed_at,
-                'approved_by': f"{task.approved_by.first_name} {task.approved_by.last_name}".strip() if task.approved_by else None,
-                'approved_at':       task.approved_at,
-                'rejected_by': f"{task.rejected_by.first_name} {task.rejected_by.last_name}".strip() if task.rejected_by else None,
-                'rejected_at':       task.rejected_at,
-                'rejection_reason':  task.rejection_reason,
+
+                # Submission info
+                'submitted_at': task.completed_at.strftime('%b %d, %I:%M %p')
+                                if task.completed_at else None,
+                'created_at':   task.created_at,
+
+                # Approval/rejection info
+                'approved_by':      f"{task.approved_by.first_name} {task.approved_by.last_name}".strip()
+                                    if task.approved_by else None,
+                'approved_at':      task.approved_at,
+                'rejected_by':      f"{task.rejected_by.first_name} {task.rejected_by.last_name}".strip()
+                                    if task.rejected_by else None,
+                'rejected_at':      task.rejected_at,
+                'rejection_reason': task.rejection_reason,
+
+                # ── Frontend uses these to show/hide buttons ───────
+                'can_edit':   can_edit,
+                'can_delete': can_edit,
             })
 
         return Response({
-            'stats':   stats,
-            'tab':     tab,
-            'tasks':   paginator.get_paginated_response(data).data,
+            'stats':  stats,
+            'tab':    tab,
+            'tasks':  paginator.get_paginated_response(data).data,
         }, status=status.HTTP_200_OK)
-    
 
 
 class UserAttendanceView(APIView):

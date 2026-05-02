@@ -18,15 +18,14 @@ class User(AbstractUser):
         ('clock_in_user',    'Clock In User'),
     )
 
-    email     = models.EmailField(unique=True, blank=False, null=False)
-    role      = models.CharField(max_length=20, choices=ROLE_CHOICES, default='staff')
-    phone     = models.CharField(max_length=20, blank=True, null=True)
+    email         = models.EmailField(unique=True, blank=False, null=False)
+    role          = models.CharField(max_length=20, choices=ROLE_CHOICES, default='staff')
+    phone         = models.CharField(max_length=20, blank=True, null=True)
     profile_photo = models.URLField(blank=True, null=True)
     last_login_at = models.DateTimeField(blank=True, null=True)
-    is_active = models.BooleanField(default=True)
-    is_suspended = models.BooleanField(default=False)
+    is_active     = models.BooleanField(default=True)
+    is_suspended  = models.BooleanField(default=False)
 
-    # Location assignment
     location = models.ForeignKey(
         'admin_api.Location',
         on_delete=models.SET_NULL,
@@ -34,11 +33,9 @@ class User(AbstractUser):
         related_name='users'
     )
 
-    # ── Password reset OTP ────────────────────────────────────────
+    # ── OTP fields ────────────────────────────────────────────────
     reset_otp        = models.CharField(max_length=6, blank=True, null=True)
     reset_otp_expiry = models.DateTimeField(blank=True, null=True)
-
-    # ── Login OTP (2FA on login) ──────────────────────────────────
     login_otp        = models.CharField(max_length=5, blank=True, null=True)
     login_otp_expiry = models.DateTimeField(blank=True, null=True)
 
@@ -47,16 +44,39 @@ class User(AbstractUser):
 
     class Meta:
         db_table = 'users_user'
+        indexes  = [
+            # ── WHY: role is filtered in almost every view
+            # UserViewSet, DashboardView, BranchManagerDashboardView all filter by role
+            models.Index(fields=['role'], name='user_role_idx'),
+
+            # ── WHY: is_active filtered everywhere — suspended/active checks
+            models.Index(fields=['is_active'], name='user_is_active_idx'),
+
+            # ── WHY: location filtered in branch manager views
+            # filter(location=manager.location, role__in=EMPLOYEE_ROLES)
+            models.Index(fields=['location'], name='user_location_idx'),
+
+            # ── WHY: most common combo in your code
+            # User.objects.filter(role__in=EMPLOYEE_ROLES, is_active=True)
+            models.Index(fields=['role', 'is_active'], name='user_role_active_idx'),
+
+            # ── WHY: branch manager queries filter(location=x, role__in=y, is_active=True)
+            models.Index(fields=['location', 'role'], name='user_location_role_idx'),
+
+            # ── WHY: composite — most specific filter used in assignment dropdown
+            models.Index(fields=['location', 'role', 'is_active'], name='user_location_role_active_idx'),
+
+            # ── WHY: is_suspended checked on login and in user list
+            models.Index(fields=['is_suspended'], name='user_is_suspended_idx'),
+        ]
 
     def __str__(self):
         return f"{self.email} - {self.get_role_display()}"
 
-    # ── App roles (can login to mobile app) ───────────────────────
     @property
     def is_app_user(self):
         return self.role in ['tattoo_artist', 'body_piercer', 'staff']
 
-    # ── Schedule roles ────────────────────────────────────────────
     @property
     def needs_schedule(self):
         return self.role in ['tattoo_artist', 'body_piercer', 'staff']
@@ -66,14 +86,12 @@ class User(AbstractUser):
     # ================================================================
 
     def set_login_otp(self):
-        """Generate 5-digit OTP for login verification"""
         self.login_otp        = str(random.randint(10000, 99999))
         self.login_otp_expiry = timezone.now() + timedelta(minutes=10)
         self.save(update_fields=['login_otp', 'login_otp_expiry'])
         return self.login_otp
 
     def verify_login_otp(self, otp):
-        """Verify login OTP"""
         if not self.login_otp or not self.login_otp_expiry:
             return False
         if timezone.now() > self.login_otp_expiry:
@@ -85,7 +103,6 @@ class User(AbstractUser):
         return False
 
     def clear_login_otp(self):
-        """Clear login OTP after use or expiry"""
         self.login_otp        = None
         self.login_otp_expiry = None
         self.save(update_fields=['login_otp', 'login_otp_expiry'])
@@ -95,14 +112,12 @@ class User(AbstractUser):
     # ================================================================
 
     def set_reset_otp(self):
-        """Generate 5-digit OTP for password reset"""
         self.reset_otp        = str(random.randint(10000, 99999))
         self.reset_otp_expiry = timezone.now() + timedelta(minutes=10)
         self.save(update_fields=['reset_otp', 'reset_otp_expiry'])
         return self.reset_otp
 
     def verify_reset_otp(self, otp):
-        """Verify reset OTP"""
         if not self.reset_otp or not self.reset_otp_expiry:
             return False
         if timezone.now() > self.reset_otp_expiry:
@@ -114,7 +129,6 @@ class User(AbstractUser):
         return False
 
     def clear_reset_otp(self):
-        """Clear reset OTP after use or expiry"""
         self.reset_otp        = None
         self.reset_otp_expiry = None
         self.save(update_fields=['reset_otp', 'reset_otp_expiry'])

@@ -16,10 +16,15 @@ from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.tokens import RefreshToken, UntypedToken
 from rest_framework_simplejwt.exceptions import InvalidToken
 from rest_framework_simplejwt.token_blacklist.models import OutstandingToken, BlacklistedToken
+from django.db.models import Prefetch, Q, Count, Case, When, IntegerField
 import secrets
-from django.db.models import Prefetch,Q
-from .models import FAQ, Attendance, Location, QRSession, SplashScreen, UserWorkSchedule, Task, Instruction, ActivityLog,Notification
-from .permissions import IsBranchManager, IsSuperAdmin,IsClockInUser
+
+from .models import (
+    FAQ, Attendance, Location, QRSession,
+    SplashScreen, UserWorkSchedule, Task,
+    Instruction, ActivityLog, Notification
+)
+from .permissions import IsBranchManager, IsSuperAdmin, IsClockInUser
 from .serializers import (
     AdminChangePasswordSerializer,
     AdminProfileSerializer,
@@ -48,14 +53,14 @@ from .serializers import (
     TaskUpdateSerializer,
     TaskRejectSerializer,
     TaskStatsSerializer,
+    FireUserSerializer,           # ← was missing from imports
     LocationEmployeeSerializer,
     InstructionSerializer,
     InstructionListSerializer,
     InstructionStatsSerializer,
     NotificationCreateSerializer,
     NotificationSerializer,
-    NotificationStatsSerializer
-    
+    NotificationStatsSerializer,
 )
 
 User = get_user_model()
@@ -92,11 +97,11 @@ class ForgotPasswordView(APIView):
 
         try:
             send_mail(
-                subject="Salvation Tattoo Admin Password Reset Code",
-                message=f"Your 5-digit reset code is: {otp}\n\nThis code will expire in 10 minutes.",
-                from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[email],
-                fail_silently=False,
+                subject        = "Salvation Tattoo Admin Password Reset Code",
+                message        = f"Your 5-digit reset code is: {otp}\n\nThis code will expire in 10 minutes.",
+                from_email     = settings.DEFAULT_FROM_EMAIL,
+                recipient_list = [email],
+                fail_silently  = False,
             )
         except Exception as e:
             print(f"Email sending failed: {e}")
@@ -185,18 +190,22 @@ class LocationViewSet(viewsets.ModelViewSet):
         return LocationSerializer
 
     def list(self, request, *args, **kwargs):
-        queryset         = self.get_queryset()
-        total_locations  = queryset.count()
-        active_locations = queryset.filter(status='active').count()
-        total_staff      = User.objects.filter(is_active=True, location__isnull=False).count()
+        queryset = self.get_queryset()
 
-        stats      = LocationStatsSerializer({
-            'total_locations':  total_locations,
+        # FIX: single aggregate query instead of 3 separate counts
+        stats_data = queryset.aggregate(
+            total_locations  = Count('id'),
+            active_locations = Count(Case(When(status='active', then=1), output_field=IntegerField())),
+        )
+        total_staff = User.objects.filter(is_active=True, location__isnull=False).count()
+
+        stats = LocationStatsSerializer({
+            'total_locations':  stats_data['total_locations'],
             'total_staff':      total_staff,
-            'active_locations': active_locations,
+            'active_locations': stats_data['active_locations'],
         }).data
-        serializer = self.get_serializer(queryset, many=True)
 
+        serializer = self.get_serializer(queryset, many=True)
         return Response({
             'stats':     stats,
             'locations': serializer.data,
@@ -256,13 +265,15 @@ class UserViewSet(viewsets.ModelViewSet):
 
     def list(self, request, *args, **kwargs):
         queryset  = self.filter_queryset(self.get_queryset())
-        all_users = User.objects.exclude(role='super_admin')
 
-        stats = UserStatsSerializer({
-            'district_managers': all_users.filter(role='district_manager').count(),
-            'managers':          all_users.filter(role='branch_manager').count(),
-            'employees':         all_users.filter(role__in=EMPLOYEE_ROLES).count(),
-        }).data
+        # FIX: single aggregate query instead of 3 separate counts
+        all_users  = User.objects.exclude(role='super_admin')
+        stats_data = all_users.aggregate(
+            district_managers = Count(Case(When(role='district_manager', then=1), output_field=IntegerField())),
+            managers          = Count(Case(When(role='branch_manager',   then=1), output_field=IntegerField())),
+            employees         = Count(Case(When(role__in=EMPLOYEE_ROLES, then=1), output_field=IntegerField())),
+        )
+        stats = UserStatsSerializer(stats_data).data
 
         page = self.paginate_queryset(queryset)
         if page is not None:
@@ -306,7 +317,6 @@ class UserViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
 
-        # ── Re-fetch with only the sent days to avoid stale cache ─
         sent_days = [
             s['day'] for s in request.data.get('work_schedules', [])
         ] if 'work_schedules' in request.data else None
@@ -334,7 +344,6 @@ class UserViewSet(viewsets.ModelViewSet):
             status=status.HTTP_200_OK
         )
 
-    # ── Suspend ───────────────────────────────────────────────────
     @action(detail=True, methods=['post'], url_path='suspend')
     def suspend(self, request, pk=None):
         user = self.get_object()
@@ -361,7 +370,6 @@ class UserViewSet(viewsets.ModelViewSet):
             "user":    UserDetailSerializer(user).data,
         }, status=status.HTTP_200_OK)
 
-    # ── Activate ──────────────────────────────────────────────────
     @action(detail=True, methods=['post'], url_path='activate')
     def activate(self, request, pk=None):
         user = self.get_object()
@@ -388,19 +396,20 @@ class UserViewSet(viewsets.ModelViewSet):
             "user":    UserDetailSerializer(user).data,
         }, status=status.HTTP_200_OK)
 
+
 # ================================================================
-# TASK VIEWSET — UPDATED
+# TASK VIEWSET
 # ================================================================
- 
+
 class TaskViewSet(viewsets.ModelViewSet):
     permission_classes = [IsSuperAdmin]
     filter_backends    = [SearchFilter]
     search_fields      = [
         'title', 'description',
         'assigned_to__first_name', 'assigned_to__last_name',
-        'completed_by__first_name', 'completed_by__last_name',  # ← search by completed by name
+        'completed_by__first_name', 'completed_by__last_name',
     ]
- 
+
     def get_queryset(self):
         queryset = Task.objects.select_related(
             'location', 'assigned_to', 'completed_by',
@@ -417,10 +426,8 @@ class TaskViewSet(viewsets.ModelViewSet):
         if location_filter and location_filter != 'all':
             queryset = queryset.filter(location_id=location_filter)
 
-        # ── Period filter ─────────────────────────────────────────
         if period_filter and period_filter != 'all':
-            today = timezone.localdate()   # ← use localdate not now.date()
-
+            today = timezone.localdate()
             if period_filter == 'today':
                 queryset = queryset.filter(created_at__date=today)
             elif period_filter == 'weekly':
@@ -431,7 +438,7 @@ class TaskViewSet(viewsets.ModelViewSet):
                 queryset = queryset.filter(created_at__date__gte=today - timedelta(days=365))
 
         return queryset
-    
+
     def get_serializer_class(self):
         if self.action == 'list':
             return TaskListSerializer
@@ -440,48 +447,40 @@ class TaskViewSet(viewsets.ModelViewSet):
         if self.action in ['update', 'partial_update']:
             return TaskUpdateSerializer
         return TaskDetailSerializer
- 
+
     def list(self, request, *args, **kwargs):
-        queryset      = self.filter_queryset(self.get_queryset())
-        search_query  = request.query_params.get('search', '').strip()
-        all_tasks     = Task.objects.all()
- 
-        # ── Stats — always from all tasks ─────────────────────
-        stats = TaskStatsSerializer({
-            'all_tasks': all_tasks.count(),
-            'overdue':   all_tasks.filter(status='overdue').count(),
-            'completed': all_tasks.filter(status='completed').count(),
-            'rejected':  all_tasks.filter(status='rejected').count(),
-        }).data
- 
-        # ── If searching by completed_by — skip stats cards ──
-        # Frontend handles hiding stats when search is active
+        queryset     = self.filter_queryset(self.get_queryset())
+        search_query = request.query_params.get('search', '').strip()
+
+        # FIX: single aggregate query instead of 4 separate counts
+        stats_data = Task.objects.aggregate(
+            all_tasks = Count('id'),
+            overdue   = Count(Case(When(status='overdue',   then=1), output_field=IntegerField())),
+            completed = Count(Case(When(status='completed', then=1), output_field=IntegerField())),
+            rejected  = Count(Case(When(status='rejected',  then=1), output_field=IntegerField())),
+        )
+        stats = TaskStatsSerializer(stats_data).data
+
         page = self.paginate_queryset(queryset)
         if page is not None:
-            serializer = self.get_serializer(page, many=True)
-            paginated  = self.get_paginated_response(serializer.data)
- 
-            response_data = {'tasks': paginated.data}
- 
-            # Only include stats when not searching by employee
+            serializer    = self.get_serializer(page, many=True)
+            paginated      = self.get_paginated_response(serializer.data)
+            response_data  = {'tasks': paginated.data}
             if not search_query:
                 response_data['stats'] = stats
- 
             return Response(response_data, status=status.HTTP_200_OK)
- 
-        serializer = self.get_serializer(queryset, many=True)
+
+        serializer    = self.get_serializer(queryset, many=True)
         response_data = {'tasks': serializer.data}
- 
         if not search_query:
             response_data['stats'] = stats
- 
         return Response(response_data, status=status.HTTP_200_OK)
- 
+
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         task = serializer.save(created_by=request.user)
- 
+
         ActivityLog.objects.create(
             action      = 'task_assigned',
             actor       = request.user,
@@ -489,64 +488,46 @@ class TaskViewSet(viewsets.ModelViewSet):
             target_user = task.assigned_to,
             message     = f'Task "{task.title}" assigned to {task.assigned_to.get_full_name()}'
         )
- 
+
         return Response({
             'message': 'Task created successfully.',
             'task':    TaskDetailSerializer(task).data,
         }, status=status.HTTP_201_CREATED)
- 
+
     def retrieve(self, request, *args, **kwargs):
         task = self.get_object()
         return Response(TaskDetailSerializer(task).data, status=status.HTTP_200_OK)
- 
+
     def partial_update(self, request, *args, **kwargs):
         task = self.get_object()
-
+        # FIX: super admin can edit any pending task — removed wrong created_by check
         if task.status != 'pending':
             return Response(
                 {"error": "Only pending tasks can be edited."},
                 status=status.HTTP_400_BAD_REQUEST
             )
-
-        # ── Only branch manager who created it can edit ───────────
-        if task.created_by != request.user:
-            return Response(
-                {"error": "You can only edit tasks you created."},
-                status=status.HTTP_403_FORBIDDEN
-            )
-
         serializer = self.get_serializer(task, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         task = serializer.save()
-
         return Response({
             'message': 'Task updated successfully.',
             'task':    TaskDetailSerializer(task).data,
         }, status=status.HTTP_200_OK)
 
-
     def destroy(self, request, *args, **kwargs):
         task = self.get_object()
-
+        # FIX: super admin can delete any pending task — removed wrong created_by check
         if task.status != 'pending':
             return Response(
                 {"error": "Only pending tasks can be deleted."},
                 status=status.HTTP_400_BAD_REQUEST
             )
-
-        # ── Only branch manager who created it can delete ─────────
-        if task.created_by != request.user:
-            return Response(
-                {"error": "You can only delete tasks you created."},
-                status=status.HTTP_403_FORBIDDEN
-            )
-
         task.delete()
         return Response(
             {"message": "Task deleted successfully."},
             status=status.HTTP_200_OK
         )
- 
+
     @action(detail=True, methods=['post'], url_path='approve')
     def approve(self, request, pk=None):
         task = self.get_object()
@@ -575,7 +556,6 @@ class TaskViewSet(viewsets.ModelViewSet):
             'message': 'Task approved successfully.',
             'task':    TaskDetailSerializer(task).data,
         }, status=status.HTTP_200_OK)
-
 
     @action(detail=True, methods=['post'], url_path='reject')
     def reject(self, request, pk=None):
@@ -607,8 +587,25 @@ class TaskViewSet(viewsets.ModelViewSet):
             'message': 'Task rejected.',
             'task':    TaskDetailSerializer(task).data,
         }, status=status.HTTP_200_OK)
- 
-    # ── Fire User ─────────────────────────────────────────────────
+
+    @action(detail=True, methods=['get'], url_path='fire-info')
+    def fire_info(self, request, pk=None):
+        task = self.get_object()
+        if task.status != 'overdue':
+            return Response(
+                {"error": "This task is not overdue."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        user = task.assigned_to
+        return Response({
+            'task_id':       task.id,
+            'task_title':    task.title,
+            'employee_name': user.get_full_name(),
+            'email':         user.email,
+            'role':          user.get_role_display(),
+            'location':      user.location.name if user.location else None,
+        }, status=status.HTTP_200_OK)
+
     @action(detail=True, methods=['post'], url_path='fire-user')
     def fire_user(self, request, pk=None):
         task = self.get_object()
@@ -631,20 +628,17 @@ class TaskViewSet(viewsets.ModelViewSet):
         fire_reason = serializer.validated_data['fire_reason']
         user        = task.assigned_to
 
-        # ── Mark task as fired ────────────────────────────────────
         task.is_fired = True
         task.save(update_fields=['is_fired'])
 
-        # ── Deactivate user ───────────────────────────────────────
         user.is_active    = False
         user.is_suspended = True
         user.save(update_fields=['is_active', 'is_suspended'])
 
-        # ── Send fire email ───────────────────────────────────────
         try:
             send_mail(
-                subject = "Employment Termination — Salvation Tattoo Lounge",
-                message = (
+                subject        = "Employment Termination — Salvation Tattoo Lounge",
+                message        = (
                     f"Dear {user.get_full_name()},\n\n"
                     f"We regret to inform you that your employment at Salvation Tattoo Lounge "
                     f"has been terminated.\n\n"
@@ -668,14 +662,15 @@ class TaskViewSet(viewsets.ModelViewSet):
 
         return Response({
             'message':     f'{user.get_full_name()} has been fired and notified by email.',
-            'employee': {
+            'employee':    {
                 'id':    user.id,
                 'name':  user.get_full_name(),
                 'email': user.email,
             },
             'fire_reason': fire_reason,
         }, status=status.HTTP_200_OK)
-    
+
+
 # ================================================================
 # EMPLOYEES BY LOCATION
 # ================================================================
@@ -693,9 +688,9 @@ class LocationEmployeesView(APIView):
             )
 
         employees = User.objects.filter(
-            location=location,
-            role__in=ASSIGNABLE_ROLES,
-            is_active=True
+            location  = location,
+            role__in  = ASSIGNABLE_ROLES,
+            is_active = True
         )
 
         serializer = LocationEmployeeSerializer(employees, many=True)
@@ -708,38 +703,30 @@ class LocationEmployeesView(APIView):
 # ================================================================
 # INSTRUCTION VIEWSET
 # ================================================================
- 
+
 class InstructionViewSet(viewsets.ModelViewSet):
     permission_classes = [IsSuperAdmin]
     filter_backends    = [SearchFilter]
     search_fields      = ['title', 'description']
     parser_classes     = [MultiPartParser, FormParser, JSONParser]
- 
+
     def get_queryset(self):
         queryset    = Instruction.objects.all().order_by('-created_at')
         role_filter = self.request.query_params.get('role')
         if role_filter and role_filter != 'all':
             queryset = queryset.filter(role_visibility__contains=role_filter)
         return queryset
- 
+
     def get_serializer_class(self):
         if self.action == 'list':
             return InstructionListSerializer
         return InstructionSerializer
- 
+
     def _parse_role_visibility(self, request):
-        """
-        Handles role_visibility from:
-        - form-data multiple keys: role_visibility=tattoo_artist & role_visibility=staff
-        - form-data JSON string:   role_visibility=["tattoo_artist","staff"]
-        - JSON body:               role_visibility: ["tattoo_artist","staff"]
-        """
         import json
         role_visibility = request.data.getlist('role_visibility')
- 
         if not role_visibility:
             return []
- 
         if len(role_visibility) == 1:
             try:
                 parsed = json.loads(role_visibility[0])
@@ -747,93 +734,56 @@ class InstructionViewSet(viewsets.ModelViewSet):
                     return parsed
             except (ValueError, TypeError):
                 pass
- 
         return role_visibility
- 
+
     def list(self, request, *args, **kwargs):
         queryset     = self.filter_queryset(self.get_queryset())
         all_instruct = Instruction.objects.all()
         role_filter  = request.query_params.get('role')
 
-        # ── Stats (always from all instructions) ─────────────────
-        stats = InstructionStatsSerializer({
-            'total_instructions': all_instruct.count(),
-            'tattoo_artists':     all_instruct.filter(role_visibility__contains='tattoo_artist').count(),
-            'body_piercers':      all_instruct.filter(role_visibility__contains='body_piercer').count(),
-            'staff':              all_instruct.filter(role_visibility__contains='staff').count(),
-            'branch_managers':    all_instruct.filter(role_visibility__contains='branch_manager').count(),
-            'district_managers':  all_instruct.filter(role_visibility__contains='district_manager').count(),
-        }).data
+        # NOTE: JSONField contains queries can use aggregate easily
+        stats_data = Instruction.objects.aggregate(
+            total_instructions = Count('id'),
+            tattoo_artists     = Count('id', filter=Q(role_visibility__contains=['tattoo_artist'])),
+            body_piercers      = Count('id', filter=Q(role_visibility__contains=['body_piercer'])),
+            staff              = Count('id', filter=Q(role_visibility__contains=['staff'])),
+            branch_managers    = Count('id', filter=Q(role_visibility__contains=['branch_manager'])),
+            district_managers  = Count('id', filter=Q(role_visibility__contains=['district_manager'])),
+        )
+        stats = InstructionStatsSerializer(stats_data).data
 
         serializer = self.get_serializer(queryset, many=True)
         all_data   = serializer.data
 
-        # ── If role filter applied — return flat filtered list ────
         if role_filter and role_filter != 'all':
             return Response({
                 'stats':        stats,
                 'instructions': all_data,
             }, status=status.HTTP_200_OK)
 
-        # ── Default — return grouped by section ───────────────────
-        employee_instructions = [
-            i for i in all_data
-            if any(r in i['role_visibility'] for r in ['tattoo_artist', 'body_piercer', 'staff'])
-        ]
-        manager_instructions = [
-            i for i in all_data
-            if 'branch_manager' in i['role_visibility']
-        ]
-        district_manager_instructions = [
-            i for i in all_data
-            if 'district_manager' in i['role_visibility']
-        ]
+        employee_instructions         = [i for i in all_data if any(r in i['role_visibility'] for r in ['tattoo_artist', 'body_piercer', 'staff'])]
+        manager_instructions          = [i for i in all_data if 'branch_manager'   in i['role_visibility']]
+        district_manager_instructions = [i for i in all_data if 'district_manager' in i['role_visibility']]
 
         grouped = [
-            {
-                'section':        'Employees Instructions',
-                'document_count': len(employee_instructions),
-                'instructions':   employee_instructions,
-            },
-            {
-                'section':        'Managers Instructions',
-                'document_count': len(manager_instructions),
-                'instructions':   manager_instructions,
-            },
-            {
-                'section':        'District Managers Instructions',
-                'document_count': len(district_manager_instructions),
-                'instructions':   district_manager_instructions,
-            },
+            {'section': 'Employees Instructions',         'document_count': len(employee_instructions),         'instructions': employee_instructions},
+            {'section': 'Managers Instructions',          'document_count': len(manager_instructions),          'instructions': manager_instructions},
+            {'section': 'District Managers Instructions', 'document_count': len(district_manager_instructions), 'instructions': district_manager_instructions},
         ]
 
         return Response({
-            'stats':  stats,
+            'stats':   stats,
             'grouped': grouped,
         }, status=status.HTTP_200_OK)
- 
-    def create(self, request, *args, **kwargs):
-        data                   = request.data.copy()
-        data['role_visibility'] = self._parse_role_visibility(request)
- 
-        serializer = InstructionSerializer(data=data)
-        serializer.is_valid(raise_exception=True)
-        instruction = serializer.save(created_by=request.user)
- 
-        return Response({
-            'message':     'Instruction created successfully.',
-            'instruction': InstructionSerializer(instruction).data,
-        }, status=status.HTTP_201_CREATED)
- 
+
+    # FIX: duplicate create method removed — only keep this one
     def create(self, request, *args, **kwargs):
         role_visibility = self._parse_role_visibility(request)
-
         data = {
             'title':           request.data.get('title'),
             'description':     request.data.get('description', ''),
             'role_visibility': role_visibility,
         }
-
         if 'pdf_file' in request.FILES:
             data['pdf_file'] = request.FILES['pdf_file']
 
@@ -846,13 +796,10 @@ class InstructionViewSet(viewsets.ModelViewSet):
             'instruction': InstructionSerializer(instruction).data,
         }, status=status.HTTP_201_CREATED)
 
-    # ↓ REPLACE THIS METHOD
     def partial_update(self, request, *args, **kwargs):
         instruction     = self.get_object()
         role_visibility = self._parse_role_visibility(request)
-
         data = {}
-
         if request.data.get('title'):
             data['title'] = request.data.get('title')
         if request.data.get('description'):
@@ -870,7 +817,7 @@ class InstructionViewSet(viewsets.ModelViewSet):
             'message':     'Instruction updated successfully.',
             'instruction': InstructionSerializer(instruction).data,
         }, status=status.HTTP_200_OK)
- 
+
     def destroy(self, request, *args, **kwargs):
         instruction = self.get_object()
         instruction.delete()
@@ -883,6 +830,7 @@ class InstructionViewSet(viewsets.ModelViewSet):
 # ================================================================
 # APP CONTENT
 # ================================================================
+
 class SplashScreenView(APIView):
     permission_classes = [AllowAny]
 
@@ -895,30 +843,21 @@ class SplashScreenView(APIView):
 
     def post(self, request):
         import cloudinary.uploader
-
-        image_type = request.data.get('type')  # 'web' or 'app'
+        image_type = request.data.get('type')
         image      = request.FILES.get('image')
 
         if not image:
-            return Response(
-                {"error": "No image provided."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
+            return Response({"error": "No image provided."}, status=status.HTTP_400_BAD_REQUEST)
         if image_type not in ['web', 'app']:
-            return Response(
-                {"error": "type must be 'web' or 'app'"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return Response({"error": "type must be 'web' or 'app'"}, status=status.HTTP_400_BAD_REQUEST)
 
-        result     = cloudinary.uploader.upload(image, folder="splash_screen")
-        obj, _     = SplashScreen.objects.get_or_create(id=1)
+        result = cloudinary.uploader.upload(image, folder="splash_screen")
+        obj, _ = SplashScreen.objects.get_or_create(id=1)
 
         if image_type == 'web':
             obj.web_image_url = result['secure_url']
         else:
             obj.app_image_url = result['secure_url']
-
         obj.save()
 
         return Response({
@@ -926,6 +865,7 @@ class SplashScreenView(APIView):
             "image_url": result['secure_url'],
             "type":      image_type,
         })
+
 
 class FAQViewSet(viewsets.ModelViewSet):
     permission_classes = [IsSuperAdmin]
@@ -982,7 +922,6 @@ class AdminChangePasswordView(APIView):
         serializer.is_valid(raise_exception=True)
 
         user = request.user
-
         if not user.check_password(serializer.validated_data['current_password']):
             return Response(
                 {"error": "Current password is incorrect."},
@@ -996,9 +935,7 @@ class AdminChangePasswordView(APIView):
         for token in tokens:
             BlacklistedToken.objects.get_or_create(token=token)
 
-        return Response({
-            "message": "Password updated successfully. Please login again."
-        })
+        return Response({"message": "Password updated successfully. Please login again."})
 
 
 # ================================================================
@@ -1012,16 +949,13 @@ def get_performance_status(completion_rate):
         return 'Monitor'
     return 'At Risk'
 
-
 class PerformanceAnalyticsView(APIView):
     permission_classes = [IsSuperAdmin]
 
     def get(self, request):
-        period = request.query_params.get('period', 'today')  # ← default changed
+        period = request.query_params.get('period', 'today')
+        now    = timezone.now()
 
-        now = timezone.now()
-
-        # ── Date range ────────────────────────────────────────────
         if period == 'today':
             start_date     = now.replace(hour=0, minute=0, second=0, microsecond=0)
             days_in_period = 1
@@ -1031,53 +965,73 @@ class PerformanceAnalyticsView(APIView):
         elif period == 'yearly':
             start_date     = now - timedelta(days=365)
             days_in_period = 365
-        else:  # weekly
+        else:
             start_date     = now - timedelta(days=7)
             days_in_period = 7
 
-        employees = User.objects.filter(
-            role__in  = EMPLOYEE_ROLES,
-            is_active = True
+        employees = User.objects.filter(role__in=EMPLOYEE_ROLES, is_active=True)
+
+        # ── Compute once — reuse everywhere ───────────────────────
+        total_emp = employees.count()
+
+        employees_with_attendance = employees.prefetch_related(
+            Prefetch(
+                'attendances',
+                queryset=Attendance.objects.filter(
+                    date__gte  = start_date.date(),
+                    status__in = ['present', 'late']
+                ),
+                to_attr='period_attendances'
+            )
         )
 
-        tasks_in_period = Task.objects.filter(
-            assigned_to__role__in = EMPLOYEE_ROLES,
-            created_at__gte       = start_date,
-        )
+        # ── Bulk task stats — 1 query for all employees ───────────
+        emp_ids = list(employees.values_list('id', flat=True))
 
-        # ── Per-employee stats ────────────────────────────────────
+        task_bulk_qs = (
+            Task.objects
+            .filter(assigned_to_id__in=emp_ids, created_at__gte=start_date)
+            .values('assigned_to_id')
+            .annotate(
+                total     = Count('id'),
+                completed = Count(Case(
+                    When(status__in=['completed', 'approved'], then=1),
+                    output_field=IntegerField()
+                )),
+                overdue   = Count(Case(
+                    When(status='overdue', then=1),
+                    output_field=IntegerField()
+                )),
+            )
+        )
+        task_bulk_map = {row['assigned_to_id']: row for row in task_bulk_qs}
+
         rankings = []
-        for employee in employees:
-            emp_tasks         = tasks_in_period.filter(assigned_to=employee)
-            total             = emp_tasks.count()
-            completed         = emp_tasks.filter(status__in=['completed', 'approved']).count()
-            overdue           = emp_tasks.filter(status='overdue').count()
-            completion_rate   = round((completed / total * 100)) if total > 0 else 0
-            overdue_penalty   = (overdue / total * 100) if total > 0 else 0
-            performance_score = round((completion_rate * 0.7) + ((100 - overdue_penalty) * 0.3))
+        for employee in employees_with_attendance:
+            task_data       = task_bulk_map.get(employee.id, {})
+            total           = task_data.get('total',     0)
+            completed       = task_data.get('completed', 0)
+            overdue         = task_data.get('overdue',   0)
+            completion_rate = round((completed / total * 100)) if total > 0 else 0
+            overdue_penalty = (overdue / total * 100) if total > 0 else 0
+            perf_score      = round((completion_rate * 0.7) + ((100 - overdue_penalty) * 0.3))
 
-            # ── Per-employee attendance ───────────────────────────
-            emp_attended   = Attendance.objects.filter(
-                user       = employee,
-                date__gte  = start_date.date(),
-                status__in = ['present', 'late']
-            ).count()
+            emp_attended   = len(employee.period_attendances)
             emp_attendance = round((emp_attended / days_in_period * 100)) if days_in_period > 0 else 0
 
             rankings.append({
-                'user':               employee,
-                'tasks_completed':    completed,
-                'total_tasks':        total,
-                'overdue':            overdue,
-                'completion_rate':    completion_rate,
-                'performance_score':  performance_score,
-                'attendance':         emp_attendance,
-                'status':             get_performance_status(completion_rate),
+                'user':              employee,
+                'tasks_completed':   completed,
+                'total_tasks':       total,
+                'overdue':           overdue,
+                'completion_rate':   completion_rate,
+                'performance_score': perf_score,
+                'attendance':        emp_attendance,
+                'status':            get_performance_status(completion_rate),
             })
 
         rankings.sort(key=lambda x: x['performance_score'], reverse=True)
 
-        # ── Top performer ─────────────────────────────────────────
         top_performer = None
         if rankings:
             top = rankings[0]
@@ -1094,8 +1048,7 @@ class PerformanceAnalyticsView(APIView):
         total_completed = sum(r['tasks_completed'] for r in rankings)
         avg_completion  = round(sum(r['completion_rate'] for r in rankings) / len(rankings)) if rankings else 0
 
-        # ── Avg attendance rate ───────────────────────────────────
-        total_emp      = employees.count()
+        # ── Attendance avg — reuses total_emp, no extra count() ───
         total_attended = Attendance.objects.filter(
             user__in   = employees,
             date__gte  = start_date.date(),
@@ -1104,20 +1057,19 @@ class PerformanceAnalyticsView(APIView):
         max_possible   = total_emp * days_in_period
         avg_attendance = round((total_attended / max_possible * 100)) if max_possible > 0 else 0
 
-        # ── Build ranked list ─────────────────────────────────────
         ranked_list = []
         for i, r in enumerate(rankings, start=1):
             ranked_list.append({
-                'rank':               i,
-                'id':                 r['user'].id,
-                'name':               f"{r['user'].first_name} {r['user'].last_name}".strip(),
-                'email':              r['user'].email,
-                'tasks_completed':    r['tasks_completed'],
-                'overdue':            r['overdue'],
-                'completion_rate':    r['completion_rate'],
-                'performance_score':  r['performance_score'],
-                'attendance':         r['attendance'],
-                'status':             r['status'],
+                'rank':              i,
+                'id':                r['user'].id,
+                'name':              f"{r['user'].first_name} {r['user'].last_name}".strip(),
+                'email':             r['user'].email,
+                'tasks_completed':   r['tasks_completed'],
+                'overdue':           r['overdue'],
+                'completion_rate':   r['completion_rate'],
+                'performance_score': r['performance_score'],
+                'attendance':        r['attendance'],
+                'status':            r['status'],
             })
 
         paginator      = PageNumberPagination()
@@ -1130,60 +1082,58 @@ class PerformanceAnalyticsView(APIView):
                 'avg_completion_rate':   avg_completion,
                 'avg_attendance_rate':   avg_attendance,
                 'total_tasks_completed': total_completed,
-                'active_employees':      employees.count(),
+                'active_employees':      total_emp,       # reused — no extra query
             },
             'top_performer': top_performer,
             'rankings':      paginated_data,
         })
-
-
 # ================================================================
 # REPORTS
 # ================================================================
-
 class ReportsAnalyticsView(APIView):
     permission_classes = [IsSuperAdmin]
 
     def get(self, request):
-        period          = request.query_params.get('period', 'today')  # ← default changed
+        from dateutil.relativedelta import relativedelta
+
+        period          = request.query_params.get('period', 'today')
         location_filter = request.query_params.get('location')
         user_filter     = request.query_params.get('user')
+        now             = timezone.now()
 
-        now = timezone.now()
-
-        # ── Date range ────────────────────────────────────────────
         if period == 'today':
             start_date     = now.replace(hour=0, minute=0, second=0, microsecond=0)
             days_in_period = 1
-            chart_days     = 1
         elif period == 'monthly':
             start_date     = now - timedelta(days=30)
             days_in_period = 30
-            chart_days     = 30
         elif period == 'yearly':
             start_date     = now - timedelta(days=365)
             days_in_period = 365
-            chart_days     = 12   # monthly buckets for yearly chart
-        else:  # weekly
+        else:
             start_date     = now - timedelta(days=7)
             days_in_period = 7
-            chart_days     = 7
 
-        # ── Tasks ─────────────────────────────────────────────────
+        # ── Base querysets ────────────────────────────────────────
         tasks = Task.objects.filter(created_at__gte=start_date)
         if location_filter:
             tasks = tasks.filter(location_id=location_filter)
         if user_filter:
             tasks = tasks.filter(assigned_to_id=user_filter)
 
-        total_tasks     = tasks.count()
-        completed_tasks = tasks.filter(status__in=['completed', 'approved']).count()
-        pending_tasks   = tasks.filter(status='pending').count()
+        # ── Top stats ─────────────────────────────────────────────
+        task_stats = tasks.aggregate(
+            total     = Count('id'),
+            completed = Count(Case(When(status__in=['completed', 'approved'], then=1), output_field=IntegerField())),
+            pending   = Count(Case(When(status='pending', then=1), output_field=IntegerField())),
+        )
+        total_tasks     = task_stats['total']
+        completed_tasks = task_stats['completed']
+        pending_tasks   = task_stats['pending']
         completion_rate = round((completed_tasks / total_tasks * 100)) if total_tasks > 0 else 0
         active_staff    = User.objects.filter(role__in=EMPLOYEE_ROLES, is_active=True).count()
 
-        # ── Avg attendance rate ───────────────────────────────────
-        total_employees = User.objects.filter(role__in=EMPLOYEE_ROLES, is_active=True).count()
+        total_employees = active_staff
         total_attended  = Attendance.objects.filter(
             date__gte  = start_date.date(),
             status__in = ['present', 'late']
@@ -1193,94 +1143,197 @@ class ReportsAnalyticsView(APIView):
 
         # ── Attendance trend chart ────────────────────────────────
         attendance_trend = []
+
         if period == 'yearly':
-            # ── Monthly buckets for yearly ────────────────────────
+            # Build all 12 month boundaries first
+            month_ranges = []
             for i in range(11, -1, -1):
-                from dateutil.relativedelta import relativedelta
-                month_start = (now - relativedelta(months=i)).replace(
+                m_start = (now - relativedelta(months=i)).replace(
                     day=1, hour=0, minute=0, second=0, microsecond=0
                 )
-                month_end   = (month_start + relativedelta(months=1))
-                month_records = Attendance.objects.filter(
-                    date__gte=month_start.date(),
-                    date__lt=month_end.date()
-                )
+                m_end = m_start + relativedelta(months=1)
+                month_ranges.append((m_start, m_end))
+
+            year_start = month_ranges[0][0].date()
+            year_end   = month_ranges[-1][1].date()
+
+            # 1 query — all attendance in the year grouped by date+status
+            att_qs = (
+                Attendance.objects
+                .filter(date__gte=year_start, date__lt=year_end)
+                .values('date', 'status')
+                .annotate(total=Count('id'))
+            )
+            # Build lookup: { date: { status: count } }
+            att_map = {}
+            for row in att_qs:
+                att_map.setdefault(row['date'], {})[row['status']] = row['total']
+
+            for m_start, m_end in month_ranges:
+                present = late = absent = 0
+                d = m_start.date()
+                while d < m_end.date():
+                    day_data = att_map.get(d, {})
+                    present += day_data.get('present', 0)
+                    late    += day_data.get('late',    0)
+                    absent  += day_data.get('absent',  0)
+                    d += timedelta(days=1)
                 attendance_trend.append({
-                    'date':    month_start.strftime('%b %Y'),
-                    'present': month_records.filter(status='present').count(),
-                    'late':    month_records.filter(status='late').count(),
-                    'absent':  month_records.filter(status='absent').count(),
-                })
-        elif period == 'today':
-            # ── Single day ────────────────────────────────────────
-            today_records = Attendance.objects.filter(date=now.date())
-            attendance_trend.append({
-                'date':    now.strftime('%b %d'),
-                'present': today_records.filter(status='present').count(),
-                'late':    today_records.filter(status='late').count(),
-                'absent':  today_records.filter(status='absent').count(),
-            })
-        else:
-            # ── Daily buckets for weekly/monthly ──────────────────
-            for i in range(chart_days - 1, -1, -1):
-                day         = (now - timedelta(days=i)).date()
-                day_records = Attendance.objects.filter(date=day)
-                attendance_trend.append({
-                    'date':    day.strftime('%b %d'),
-                    'present': day_records.filter(status='present').count(),
-                    'late':    day_records.filter(status='late').count(),
-                    'absent':  day_records.filter(status='absent').count(),
+                    'date':    m_start.strftime('%b %Y'),
+                    'present': present,
+                    'late':    late,
+                    'absent':  absent,
                 })
 
-        # ── Task completion chart ─────────────────────────────────
-        task_chart = []
-        if period == 'yearly':
-            # ── Monthly buckets ───────────────────────────────────
-            for i in range(11, -1, -1):
-                from dateutil.relativedelta import relativedelta
-                month_start = (now - relativedelta(months=i)).replace(
-                    day=1, hour=0, minute=0, second=0, microsecond=0
-                )
-                month_end   = (month_start + relativedelta(months=1))
-                month_tasks = tasks.filter(
-                    created_at__gte=month_start,
-                    created_at__lt=month_end
-                )
-                task_chart.append({
-                    'date':      month_start.strftime('%b %Y'),
-                    'approved':  month_tasks.filter(status='approved').count(),
-                    'completed': month_tasks.filter(status='completed').count(),
-                    'pending':   month_tasks.filter(status='pending').count(),
-                })
         elif period == 'today':
-            # ── Single day ────────────────────────────────────────
+            # 1 query
+            today_stats = Attendance.objects.filter(date=now.date()).aggregate(
+                present = Count(Case(When(status='present', then=1), output_field=IntegerField())),
+                late    = Count(Case(When(status='late',    then=1), output_field=IntegerField())),
+                absent  = Count(Case(When(status='absent',  then=1), output_field=IntegerField())),
+            )
+            attendance_trend.append({
+                'date':    now.strftime('%b %d'),
+                'present': today_stats['present'],
+                'late':    today_stats['late'],
+                'absent':  today_stats['absent'],
+            })
+
+        else:
+            # weekly/monthly — 1 query
+            chart_days = days_in_period
+            range_start = (now - timedelta(days=chart_days - 1)).date()
+
+            att_qs = (
+                Attendance.objects
+                .filter(date__gte=range_start, date__lte=now.date())
+                .values('date', 'status')
+                .annotate(total=Count('id'))
+            )
+            att_map = {}
+            for row in att_qs:
+                att_map.setdefault(row['date'], {})[row['status']] = row['total']
+
+            for i in range(chart_days - 1, -1, -1):
+                day      = (now - timedelta(days=i)).date()
+                day_data = att_map.get(day, {})
+                attendance_trend.append({
+                    'date':    day.strftime('%b %d'),
+                    'present': day_data.get('present', 0),
+                    'late':    day_data.get('late',    0),
+                    'absent':  day_data.get('absent',  0),
+                })
+
+        # ── Task chart ────────────────────────────────────────────
+        task_chart = []
+
+        if period == 'yearly':
+            # 1 query — all tasks in year grouped by date+status
+            task_qs = (
+                tasks
+                .values('created_at__date', 'status')
+                .annotate(total=Count('id'))
+            )
+            task_map = {}
+            for row in task_qs:
+                task_map.setdefault(row['created_at__date'], {})[row['status']] = row['total']
+
+            for m_start, m_end in month_ranges:
+                approved = completed = pending = 0
+                d = m_start.date()
+                while d < m_end.date():
+                    day_data  = task_map.get(d, {})
+                    approved  += day_data.get('approved',  0)
+                    completed += day_data.get('completed', 0)
+                    pending   += day_data.get('pending',   0)
+                    d += timedelta(days=1)
+                task_chart.append({
+                    'date':      m_start.strftime('%b %Y'),
+                    'approved':  approved,
+                    'completed': completed,
+                    'pending':   pending,
+                })
+
+        elif period == 'today':
+            # 1 query
+            today_task_stats = tasks.aggregate(
+                approved  = Count(Case(When(status='approved',  then=1), output_field=IntegerField())),
+                completed = Count(Case(When(status='completed', then=1), output_field=IntegerField())),
+                pending   = Count(Case(When(status='pending',   then=1), output_field=IntegerField())),
+            )
             task_chart.append({
                 'date':      now.strftime('%b %d'),
-                'approved':  tasks.filter(status='approved').count(),
-                'completed': tasks.filter(status='completed').count(),
-                'pending':   tasks.filter(status='pending').count(),
+                'approved':  today_task_stats['approved'],
+                'completed': today_task_stats['completed'],
+                'pending':   today_task_stats['pending'],
             })
+
         else:
-            # ── Daily buckets for weekly/monthly ──────────────────
-            for i in range(chart_days - 1, -1, -1):
-                day       = (now - timedelta(days=i)).date()
-                day_tasks = tasks.filter(created_at__date=day)
+            # weekly/monthly — 1 query
+            task_qs = (
+                tasks
+                .values('created_at__date', 'status')
+                .annotate(total=Count('id'))
+            )
+            task_map = {}
+            for row in task_qs:
+                task_map.setdefault(row['created_at__date'], {})[row['status']] = row['total']
+
+            for i in range(days_in_period - 1, -1, -1):
+                day      = (now - timedelta(days=i)).date()
+                day_data = task_map.get(day, {})
                 task_chart.append({
                     'date':      day.strftime('%b %d'),
-                    'approved':  day_tasks.filter(status='approved').count(),
-                    'completed': day_tasks.filter(status='completed').count(),
-                    'pending':   day_tasks.filter(status='pending').count(),
+                    'approved':  day_data.get('approved',  0),
+                    'completed': day_data.get('completed', 0),
+                    'pending':   day_data.get('pending',   0),
                 })
 
         # ── By location ───────────────────────────────────────────
-        locations              = Location.objects.filter(status='active')
+        # FIX: 2 bulk queries instead of N_locations × 4 queries
+        locations = Location.objects.filter(status='active')
+        loc_ids   = list(locations.values_list('id', flat=True))
+
+        # Bulk task stats per location — 1 query
+        loc_task_qs = (
+            tasks
+            .filter(location_id__in=loc_ids)
+            .values('location_id')
+            .annotate(
+                total     = Count('id'),
+                completed = Count(Case(
+                    When(status__in=['completed', 'approved'], then=1),
+                    output_field=IntegerField()
+                )),
+            )
+        )
+        loc_task_map = {row['location_id']: row for row in loc_task_qs}
+
+        # Bulk attendance stats per location — 1 query
+        loc_att_qs = (
+            Attendance.objects
+            .filter(location_id__in=loc_ids, date__gte=start_date.date(), status__in=['present', 'late'])
+            .values('location_id')
+            .annotate(attended=Count('id'))
+        )
+        loc_att_map = {row['location_id']: row['attended'] for row in loc_att_qs}
+
+        # Bulk employee count per location — 1 query
+        loc_emp_qs = (
+            User.objects
+            .filter(location_id__in=loc_ids, role__in=EMPLOYEE_ROLES, is_active=True)
+            .values('location_id')
+            .annotate(emp_count=Count('id'))
+        )
+        loc_emp_map = {row['location_id']: row['emp_count'] for row in loc_emp_qs}
+
         task_by_location       = []
         attendance_by_location = []
 
         for loc in locations:
-            loc_tasks     = tasks.filter(location=loc)
-            loc_total     = loc_tasks.count()
-            loc_completed = loc_tasks.filter(status__in=['completed', 'approved']).count()
+            task_data = loc_task_map.get(loc.id, {})
+            loc_total     = task_data.get('total',     0)
+            loc_completed = task_data.get('completed', 0)
             loc_rate      = round((loc_completed / loc_total * 100)) if loc_total > 0 else 0
             task_by_location.append({
                 'location_id':     loc.id,
@@ -1290,18 +1343,10 @@ class ReportsAnalyticsView(APIView):
                 'completion_rate': loc_rate,
             })
 
-            loc_employees = User.objects.filter(
-                location  = loc,
-                role__in  = EMPLOYEE_ROLES,
-                is_active = True
-            ).count()
-            loc_attended  = Attendance.objects.filter(
-                location   = loc,
-                date__gte  = start_date.date(),
-                status__in = ['present', 'late']
-            ).count()
-            loc_max      = loc_employees * days_in_period
-            loc_att_rate = round((loc_attended / loc_max * 100)) if loc_max > 0 else 0
+            loc_employees = loc_emp_map.get(loc.id, 0)
+            loc_attended  = loc_att_map.get(loc.id, 0)
+            loc_max       = loc_employees * days_in_period
+            loc_att_rate  = round((loc_attended / loc_max * 100)) if loc_max > 0 else 0
             attendance_by_location.append({
                 'location_id':     loc.id,
                 'location_name':   loc.name,
@@ -1313,39 +1358,45 @@ class ReportsAnalyticsView(APIView):
         attendance_by_location.sort(key=lambda x: x['attendance_rate'], reverse=True)
 
         # ── Attendance log ────────────────────────────────────────
-        attendance_by_date = []
-
         if period == 'today':
             days_to_show = [now.date()]
         elif period == 'yearly':
-            days_to_show = [
-                (now - timedelta(days=i)).date()
-                for i in range(364, -1, -1)
-            ]
+            days_to_show = [(now - timedelta(days=i)).date() for i in range(364, -1, -1)]
         elif period == 'monthly':
-            days_to_show = [
-                (now - timedelta(days=i)).date()
-                for i in range(29, -1, -1)
-            ]
-        else:  # weekly
-            days_to_show = [
-                (now - timedelta(days=i)).date()
-                for i in range(6, -1, -1)
-            ]
+            days_to_show = [(now - timedelta(days=i)).date() for i in range(29, -1, -1)]
+        else:
+            days_to_show = [(now - timedelta(days=i)).date() for i in range(6, -1, -1)]
 
+        # 1 query for all days — instead of per-day loop
+        att_log_qs = Attendance.objects.filter(date__in=days_to_show)
+        if location_filter:
+            att_log_qs = att_log_qs.filter(location_id=location_filter)
+        if user_filter:
+            att_log_qs = att_log_qs.filter(user_id=user_filter)
+
+        att_log_qs = (
+            att_log_qs
+            .values('date', 'status')
+            .annotate(total=Count('id'))
+        )
+        att_log_map = {}
+        for row in att_log_qs:
+            att_log_map.setdefault(row['date'], {})[row['status']] = row['total']
+
+        # Resolve location name once — not inside the loop
+        loc_name = 'All Locations'
+        if location_filter:
+            loc_obj  = Location.objects.filter(id=location_filter).first()
+            loc_name = loc_obj.name if loc_obj else 'All Locations'
+
+        attendance_by_date = []
         for day in days_to_show:
-            day_records = Attendance.objects.filter(date=day)
-            if location_filter:
-                day_records = day_records.filter(location_id=location_filter)
-            if user_filter:
-                day_records = day_records.filter(user_id=user_filter)
-
-            total_present = day_records.filter(status='present').count()
-            total_absent  = day_records.filter(status='absent').count()
-            total_late    = day_records.filter(status='late').count()
+            day_data      = att_log_map.get(day, {})
+            total_present = day_data.get('present', 0)
+            total_absent  = day_data.get('absent',  0)
+            total_late    = day_data.get('late',    0)
             total         = total_present + total_absent + total_late
 
-            # Skip empty days for yearly to keep response small
             if period == 'yearly' and total == 0:
                 continue
 
@@ -1353,11 +1404,6 @@ class ReportsAnalyticsView(APIView):
             label = day.strftime('%b %d, %Y')
             if day == now.date():
                 label += ' (Today)'
-
-            loc_name = 'All Locations'
-            if location_filter:
-                loc = Location.objects.filter(id=location_filter).first()
-                loc_name = loc.name if loc else 'All Locations'
 
             attendance_by_date.append({
                 'date':     label,
@@ -1368,7 +1414,6 @@ class ReportsAnalyticsView(APIView):
                 'late':     total_late,
                 'rate':     f"{rate}%",
             })
-
 
         return Response({
             'period': period,
@@ -1382,15 +1427,11 @@ class ReportsAnalyticsView(APIView):
             'task_completion_chart':       task_chart,
             'attendance_by_location':      attendance_by_location,
             'task_completion_by_location': task_by_location,
-
-
-        
+            'attendance_log':              attendance_by_date,
         })
-
 # ================================================================
 # DASHBOARD
 # ================================================================
-
 class DashboardView(APIView):
     permission_classes = [IsSuperAdmin]
 
@@ -1399,31 +1440,46 @@ class DashboardView(APIView):
         now             = timezone.now()
         location_filter = request.query_params.get('location')
 
-        # ── Stat cards ────────────────────────────────────────────
-        total_employees = User.objects.filter(
-            role__in=EMPLOYEE_ROLES, is_active=True
-        ).count()
+        # ── Top stats ─────────────────────────────────────────────
+        total_employees = User.objects.filter(role__in=EMPLOYEE_ROLES, is_active=True).count()
         total_locations = Location.objects.filter(status='active').count()
-        all_tasks       = Task.objects.all()
-        pending_tasks   = all_tasks.filter(status='pending').count()
-        approved_tasks  = all_tasks.filter(status='approved').count()
-        rejected_tasks  = all_tasks.filter(status='rejected').count()
-        total_count     = all_tasks.count()
 
-        # ── Today's attendance % ──────────────────────────────────
+        task_stats = Task.objects.aggregate(
+            total    = Count('id'),
+            pending  = Count(Case(When(status='pending',  then=1), output_field=IntegerField())),
+            approved = Count(Case(When(status='approved', then=1), output_field=IntegerField())),
+            rejected = Count(Case(When(status='rejected', then=1), output_field=IntegerField())),
+        )
+        pending_tasks  = task_stats['pending']
+        approved_tasks = task_stats['approved']
+        rejected_tasks = task_stats['rejected']
+        total_count    = task_stats['total']
+
         checked_in_today = Attendance.objects.filter(date=today).count()
         today_attendance = round((checked_in_today / total_employees * 100)) if total_employees > 0 else 0
 
-        # ── Attendance overview — last 7 days ─────────────────────
+        # ── Attendance overview — FIX: 1 query instead of 21 ─────
+        overview_start = (now - timedelta(days=6)).date()
+
+        att_overview_qs = (
+            Attendance.objects
+            .filter(date__gte=overview_start, date__lte=today)
+            .values('date', 'status')
+            .annotate(total=Count('id'))
+        )
+        overview_map = {}
+        for row in att_overview_qs:
+            overview_map.setdefault(row['date'], {})[row['status']] = row['total']
+
         attendance_overview = []
         for i in range(6, -1, -1):
-            day         = (now - timedelta(days=i)).date()
-            day_records = Attendance.objects.filter(date=day)
+            day      = (now - timedelta(days=i)).date()
+            day_data = overview_map.get(day, {})
             attendance_overview.append({
                 'date':    day.strftime('%b %d'),
-                'present': day_records.filter(status='present').count(),
-                'late':    day_records.filter(status='late').count(),
-                'absent':  day_records.filter(status='absent').count(),
+                'present': day_data.get('present', 0),
+                'late':    day_data.get('late',    0),
+                'absent':  day_data.get('absent',  0),
             })
 
         # ── Task status ───────────────────────────────────────────
@@ -1434,23 +1490,35 @@ class DashboardView(APIView):
             'rejected': rejected_tasks,
         }
 
-        # ── Task status by location ───────────────────────────────
-        locations        = Location.objects.filter(status='active')
+        # ── Task by location — FIX: 1 query instead of N ─────────
+        locations = Location.objects.filter(status='active')
+        loc_ids   = list(locations.values_list('id', flat=True))
+
+        loc_task_qs = (
+            Task.objects
+            .filter(location_id__in=loc_ids)
+            .values('location_id')
+            .annotate(
+                pending  = Count(Case(When(status='pending',  then=1), output_field=IntegerField())),
+                approved = Count(Case(When(status='approved', then=1), output_field=IntegerField())),
+                rejected = Count(Case(When(status='rejected', then=1), output_field=IntegerField())),
+            )
+        )
+        loc_task_map = {row['location_id']: row for row in loc_task_qs}
+
         task_by_location = []
         for loc in locations:
-            loc_tasks = all_tasks.filter(location=loc)
+            loc_data = loc_task_map.get(loc.id, {})
             task_by_location.append({
                 'location_id':   loc.id,
                 'location_name': loc.name,
-                'pending':       loc_tasks.filter(status='pending').count(),
-                'approved':      loc_tasks.filter(status='approved').count(),
-                'rejected':      loc_tasks.filter(status='rejected').count(),
+                'pending':       loc_data.get('pending',  0),
+                'approved':      loc_data.get('approved', 0),
+                'rejected':      loc_data.get('rejected', 0),
             })
 
         # ── Recent activity ───────────────────────────────────────
-        recent_logs     = ActivityLog.objects.select_related(
-            'actor', 'target_user', 'task'
-        )[:10]
+        recent_logs     = ActivityLog.objects.select_related('actor', 'target_user', 'task')[:10]
         recent_activity = []
         for log in recent_logs:
             recent_activity.append({
@@ -1461,22 +1529,24 @@ class DashboardView(APIView):
                 'created_at': log.created_at,
             })
 
-        # ── Today's employee breakdown (paginated) ────────────────
+        # ── Employee breakdown — prefetch keeps this N+1 free ─────
         employees = User.objects.filter(
-            role__in=EMPLOYEE_ROLES,
-            is_active=True
-        ).select_related('location').order_by('first_name')
+            role__in  = EMPLOYEE_ROLES,
+            is_active = True
+        ).select_related('location').prefetch_related(
+            Prefetch(
+                'attendances',
+                queryset=Attendance.objects.filter(date=today),
+                to_attr='today_attendances'
+            )
+        ).order_by('first_name')
 
         if location_filter:
             employees = employees.filter(location_id=location_filter)
 
         employee_breakdown = []
         for emp in employees:
-            attendance = Attendance.objects.filter(
-                user=emp,
-                date=today
-            ).first()
-
+            attendance = emp.today_attendances[0] if emp.today_attendances else None
             employee_breakdown.append({
                 'id':            emp.id,
                 'name':          f"{emp.first_name} {emp.last_name}".strip(),
@@ -1485,7 +1555,6 @@ class DashboardView(APIView):
                 'today_status':  attendance.status if attendance else 'absent',
             })
 
-        # Apply pagination to the list
         paginator           = PageNumberPagination()
         paginator.page_size = 5
         paginated_page      = paginator.paginate_queryset(employee_breakdown, request)
@@ -1497,15 +1566,14 @@ class DashboardView(APIView):
                 'pending_tasks':    pending_tasks,
                 'today_attendance': today_attendance,
             },
-            'attendance_overview':  attendance_overview,
-            'task_status':          task_status,
-            'task_by_location':     task_by_location,
-            'recent_activity':      recent_activity,
-            'employee_breakdown':   paginator.get_paginated_response(paginated_page).data,  # ← fix
+            'attendance_overview': attendance_overview,
+            'task_status':         task_status,
+            'task_by_location':    task_by_location,
+            'recent_activity':     recent_activity,
+            'employee_breakdown':  paginator.get_paginated_response(paginated_page).data,
         })
-
 # ================================================================
-# BRANCH MANAGER — QR ATTENDANCE
+# QR HELPERS
 # ================================================================
 
 def generate_qr_token():
@@ -1513,208 +1581,236 @@ def generate_qr_token():
 
 
 def deactivate_old_qr_sessions(location):
-    QRSession.objects.filter(
-        location=location,
-        is_active=True
-    ).update(is_active=False)
+    QRSession.objects.filter(location=location, is_active=True).update(is_active=False)
 
 
-# class QRGenerateView(APIView):
-#     permission_classes = [IsBranchManager]
+# ================================================================
+# SUPER ADMIN — QR SECTION
+# ================================================================
 
-#     def post(self, request):
-#         manager = request.user
+class SuperAdminQRView(APIView):
+    permission_classes = [IsSuperAdmin]
 
-#         if not manager.location:
-#             return Response(
-#                 {"error": "You are not assigned to any location."},
-#                 status=status.HTTP_400_BAD_REQUEST
-#             )
+    def get(self, request):
+        location_filter = request.query_params.get('location')
 
-#         refresh_interval = int(request.data.get('refresh_interval', 3))
-#         valid_intervals  = [1, 3, 5, 10, 30]
+        active_sessions = QRSession.objects.filter(is_active=True).select_related('location', 'created_by')
+        if location_filter:
+            active_sessions = active_sessions.filter(location_id=location_filter)
 
-#         if refresh_interval not in valid_intervals:
-#             return Response(
-#                 {"error": f"Invalid interval. Choose from {valid_intervals}"},
-#                 status=status.HTTP_400_BAD_REQUEST
-#             )
+        active_data = []
+        for session in active_sessions:
+            if session.is_expired:
+                session.is_active = False
+                session.save(update_fields=['is_active'])
+                continue
 
-#         deactivate_old_qr_sessions(manager.location)
+            # FIX: use aggregate instead of 3 property calls (3 DB hits per session)
+            att_stats = Attendance.objects.filter(qr_session=session).aggregate(
+                present = Count(Case(When(status='present', then=1), output_field=IntegerField())),
+                late    = Count(Case(When(status='late',    then=1), output_field=IntegerField())),
+                absent  = Count(Case(When(status='absent',  then=1), output_field=IntegerField())),
+            )
+            active_data.append({
+                "id":               session.id,
+                "token":            session.token,
+                "location":         session.location.name,
+                "location_id":      session.location.id,
+                "refresh_interval": session.refresh_interval,
+                "interval_display": session.get_refresh_interval_display(),
+                "created_at":       session.created_at,
+                "expires_at":       session.expires_at,
+                "seconds_left":     max(0, int((session.expires_at - timezone.now()).total_seconds())),
+                "present_count":    att_stats['present'],
+                "late_count":       att_stats['late'],
+                "absent_count":     att_stats['absent'],
+            })
 
-#         qr_session = QRSession.objects.create(
-#             location         = manager.location,
-#             created_by       = manager,
-#             token            = generate_qr_token(),
-#             refresh_interval = refresh_interval,
-#             expires_at       = timezone.now() + timedelta(minutes=refresh_interval),
-#             is_active        = True,
-#         )
+        history = QRSession.objects.all().annotate(
+            present_count=Count('attendances', filter=Q(attendances__status='present')),
+            late_count=Count('attendances', filter=Q(attendances__status='late')),
+            absent_count=Count('attendances', filter=Q(attendances__status='absent')),
+        ).order_by('-created_at')
+        if location_filter:
+            history = history.filter(location_id=location_filter)
 
-#         return Response({
-#             "message":    "QR session generated successfully.",
-#             "qr_session": QRSessionSerializer(qr_session).data,
-#         }, status=status.HTTP_201_CREATED)
+        paginator      = PageNumberPagination()
+        page           = paginator.paginate_queryset(history, request)
+        serializer     = QRSessionListSerializer(page, many=True)
+        paginated_data = paginator.get_paginated_response(serializer.data).data
+        locations      = Location.objects.filter(status='active').values('id', 'name')
 
+        return Response({
+            "active_sessions": active_data,
+            "history":         paginated_data,
+            "filter_options":  {"locations": list(locations)},
+        }, status=status.HTTP_200_OK)
 
-# class QRCurrentView(APIView):
-#     permission_classes = [IsBranchManager]
+    def post(self, request):
+        location_id = request.data.get('location') or request.data.get('location_id')
+        if not location_id:
+            return Response({"error": "location is required."}, status=status.HTTP_400_BAD_REQUEST)
 
-#     def get(self, request):
-#         manager = request.user
+        try:
+            location = Location.objects.get(id=location_id, status='active')
+        except Location.DoesNotExist:
+            return Response({"error": "Location not found."}, status=status.HTTP_404_NOT_FOUND)
 
-#         if not manager.location:
-#             return Response(
-#                 {"error": "You are not assigned to any location."},
-#                 status=status.HTTP_400_BAD_REQUEST
-#             )
+        refresh_interval = int(request.data.get('refresh_interval', 3))
+        valid_intervals  = [1, 3, 5, 10, 30]
+        if refresh_interval not in valid_intervals:
+            return Response({"error": f"Invalid interval. Choose from {valid_intervals}"}, status=status.HTTP_400_BAD_REQUEST)
 
-#         qr_session = QRSession.objects.filter(
-#             location=manager.location,
-#             is_active=True
-#         ).first()
+        deactivate_old_qr_sessions(location)
 
-#         if not qr_session:
-#             return Response(
-#                 {"message": "No active QR session. Please generate one."},
-#                 status=status.HTTP_404_NOT_FOUND
-#             )
+        qr_session = QRSession.objects.create(
+            location         = location,
+            created_by       = request.user,
+            token            = generate_qr_token(),
+            refresh_interval = refresh_interval,
+            expires_at       = timezone.now() + timedelta(minutes=refresh_interval),
+            is_active        = True,
+        )
 
-#         if qr_session.is_expired:
-#             qr_session.is_active = False
-#             qr_session.save(update_fields=['is_active'])
-#             return Response(
-#                 {"message": "QR session has expired. Please regenerate."},
-#                 status=status.HTTP_404_NOT_FOUND
-#             )
-
-#         return Response({
-#             "qr_session":   QRSessionSerializer(qr_session).data,
-#             "seconds_left": max(
-#                 0,
-#                 int((qr_session.expires_at - timezone.now()).total_seconds())
-#             ),
-#         }, status=status.HTTP_200_OK)
-
-
-# class QRHistoryView(APIView):
-#     permission_classes = [IsBranchManager]
-
-#     def get(self, request):
-#         manager = request.user
-
-#         if not manager.location:
-#             return Response(
-#                 {"error": "You are not assigned to any location."},
-#                 status=status.HTTP_400_BAD_REQUEST
-#             )
-
-#         sessions       = QRSession.objects.filter(
-#             location=manager.location
-#         ).order_by('-created_at')
-
-#         paginator      = PageNumberPagination()
-#         page           = paginator.paginate_queryset(sessions, request)
-#         serializer     = QRSessionListSerializer(page, many=True)
-#         paginated_data = paginator.get_paginated_response(serializer.data).data
-
-#         return Response({
-#             "location": manager.location.name,
-#             "history":  paginated_data,
-#         }, status=status.HTTP_200_OK)
+        return Response({
+            "message":    "QR session generated successfully.",
+            "qr_session": QRSessionSerializer(qr_session).data,
+        }, status=status.HTTP_201_CREATED)
 
 
-# class QRSessionDetailView(APIView):
-#     permission_classes = [IsBranchManager]
+class SuperAdminQRDetailView(APIView):
+    permission_classes = [IsSuperAdmin]
 
-#     def get(self, request, pk):
-#         manager = request.user
+    def get(self, request, pk):
+        qr_session = QRSession.objects.filter(pk=pk).annotate(
+            present_count=Count('attendances', filter=Q(attendances__status='present')),
+            late_count=Count('attendances', filter=Q(attendances__status='late')),
+            absent_count=Count('attendances', filter=Q(attendances__status='absent')),
+        ).first()
 
-#         try:
-#             qr_session = QRSession.objects.get(
-#                 pk=pk,
-#                 location=manager.location
-#             )
-#         except QRSession.DoesNotExist:
-#             return Response(
-#                 {"error": "QR session not found."},
-#                 status=status.HTTP_404_NOT_FOUND
-#             )
+        if not qr_session:
+            return Response({"error": "QR session not found."}, status=status.HTTP_404_NOT_FOUND)
 
-#         attendances = Attendance.objects.filter(
-#             qr_session=qr_session
-#         ).select_related('user', 'location')
-
-#         return Response({
-#             "qr_session":  QRSessionSerializer(qr_session).data,
-#             "attendances": AttendanceSerializer(attendances, many=True).data,
-#         }, status=status.HTTP_200_OK)
+        attendances = Attendance.objects.filter(qr_session=qr_session).select_related('user', 'location')
+        return Response({
+            "qr_session":  QRSessionSerializer(qr_session).data,
+            "attendances": AttendanceSerializer(attendances, many=True).data,
+        }, status=status.HTTP_200_OK)
 
 
-# class QRIntervalListView(APIView):
-#     permission_classes = [IsBranchManager]
+class SuperAdminQRIntervalListView(APIView):
+    permission_classes = [IsSuperAdmin]
 
-#     def get(self, request):
-#         intervals = [
-#             {"value": 1,  "label": "Every 1 minute"},
-#             {"value": 3,  "label": "Every 3 minutes"},
-#             {"value": 5,  "label": "Every 5 minutes"},
-#             {"value": 10, "label": "Every 10 minutes"},
-#             {"value": 30, "label": "Every 30 minutes"},
-#         ]
-#         return Response({"intervals": intervals}, status=status.HTTP_200_OK)
+    def get(self, request):
+        intervals = [
+            {"value": 1,  "label": "Every 1 minute"},
+            {"value": 3,  "label": "Every 3 minutes"},
+            {"value": 5,  "label": "Every 5 minutes"},
+            {"value": 10, "label": "Every 10 minutes"},
+            {"value": 30, "label": "Every 30 minutes"},
+        ]
+        return Response({"intervals": intervals}, status=status.HTTP_200_OK)
+
+
+# ================================================================
+# CLOCK IN USER — VIEW QR
+# ================================================================
+
+class ClockInUserQRView(APIView):
+    permission_classes = [IsClockInUser]
+
+    def get(self, request):
+        user = request.user
+        if not user.location:
+            return Response({"error": "You are not assigned to any location."}, status=status.HTTP_400_BAD_REQUEST)
+
+        qr_session = QRSession.objects.filter(location=user.location, is_active=True).first()
+
+        if not qr_session:
+            return Response({
+                "message": "No active QR session. Please contact admin.",
+                "qr_session": None, "location": user.location.name, "seconds_left": 0,
+            }, status=status.HTTP_200_OK)
+
+        if qr_session.is_expired:
+            qr_session.is_active = False
+            qr_session.save(update_fields=['is_active'])
+            return Response({
+                "message": "QR session has expired. Please contact admin.",
+                "qr_session": None, "location": user.location.name, "seconds_left": 0,
+            }, status=status.HTTP_200_OK)
+
+        seconds_left = max(0, int((qr_session.expires_at - timezone.now()).total_seconds()))
+        return Response({
+            "message":  "Active QR session found.",
+            "location": user.location.name,
+            "user": {
+                "id":    user.id,
+                "name":  f"{user.first_name} {user.last_name}".strip(),
+                "email": user.email,
+                "role":  user.get_role_display(),
+            },
+            "qr_session": {
+                "id":               qr_session.id,
+                "token":            qr_session.token,
+                "refresh_interval": qr_session.refresh_interval,
+                "interval_display": qr_session.get_refresh_interval_display(),
+                "created_at":       qr_session.created_at,
+                "expires_at":       qr_session.expires_at,
+            },
+            "seconds_left": seconds_left,
+        }, status=status.HTTP_200_OK)
+
+
+# ================================================================
+# BRANCH MANAGER VIEWS
+# ================================================================
 
 class BranchManagerProfileView(APIView):
     permission_classes = [IsBranchManager]
 
     def get(self, request):
         manager = request.user
-
         return Response({
-            'id':           manager.id,
-            'first_name':   manager.first_name,
-            'last_name':    manager.last_name,
-            'full_name':    manager.get_full_name(),
-            'username':     manager.username,
-            'email':        manager.email,
-            'phone':        manager.phone,
-            'role':         manager.role,
-            'role_display': manager.get_role_display(),
+            'id':            manager.id,
+            'first_name':    manager.first_name,
+            'last_name':     manager.last_name,
+            'full_name':     manager.get_full_name(),
+            'username':      manager.username,
+            'email':         manager.email,
+            'phone':         manager.phone,
+            'role':          manager.role,
+            'role_display':  manager.get_role_display(),
             'profile_photo': manager.profile_photo,
             'location': {
-                'id':           manager.location.id,
-                'name':         manager.location.name,
+                'id':             manager.location.id,
+                'name':           manager.location.name,
                 'street_address': manager.location.street_address,
-                'city_state':   manager.location.city_state,
-                'status':       manager.location.status,
+                'city_state':     manager.location.city_state,
+                'status':         manager.location.status,
             } if manager.location else None,
-            'date_joined':  manager.date_joined,
-            'last_login':   manager.last_login,
+            'date_joined': manager.date_joined,
+            'last_login':  manager.last_login,
         }, status=status.HTTP_200_OK)
 
     def patch(self, request):
-        manager = request.user
-
-        # Only allow updating these fields
+        manager        = request.user
         allowed_fields = ['first_name', 'last_name', 'phone', 'profile_photo']
-
         for field in allowed_fields:
             if field in request.data:
                 setattr(manager, field, request.data[field])
-
         manager.save()
-
         return Response({
-            'message':  'Profile updated successfully.',
-            'id':           manager.id,
-            'first_name':   manager.first_name,
-            'last_name':    manager.last_name,
-            'full_name':    manager.get_full_name(),
-            'username':     manager.username,
-            'email':        manager.email,
-            'phone':        manager.phone,
-            'role':         manager.role,
-            'role_display': manager.get_role_display(),
+            'message':       'Profile updated successfully.',
+            'id':            manager.id,
+            'first_name':    manager.first_name,
+            'last_name':     manager.last_name,
+            'full_name':     manager.get_full_name(),
+            'username':      manager.username,
+            'email':         manager.email,
+            'phone':         manager.phone,
+            'role':          manager.role,
+            'role_display':  manager.get_role_display(),
             'profile_photo': manager.profile_photo,
             'location': {
                 'id':             manager.location.id,
@@ -1724,28 +1820,21 @@ class BranchManagerProfileView(APIView):
                 'status':         manager.location.status,
             } if manager.location else None,
         }, status=status.HTTP_200_OK)
-    
+
+
 class BranchManagerDashboardView(APIView):
-    """
-    GET /api/admin/branch-manager/dashboard/
-    Branch manager sees only their location data
-    """
     permission_classes = [IsBranchManager]
- 
+
     def get(self, request):
         manager  = request.user
         location = manager.location
- 
+
         if not location:
-            return Response(
-                {"error": "You are not assigned to any location."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
- 
+            return Response({"error": "You are not assigned to any location."}, status=status.HTTP_400_BAD_REQUEST)
+
         today = timezone.localdate()
         now   = timezone.now()
- 
-        # ── Greeting ──────────────────────────────────────────────
+
         hour = now.hour
         if hour < 12:
             greeting_time = "Good morning"
@@ -1753,112 +1842,86 @@ class BranchManagerDashboardView(APIView):
             greeting_time = "Good afternoon"
         else:
             greeting_time = "Good evening"
- 
+
         greeting = f"{greeting_time}, {manager.first_name or 'Store Manager'} 👋"
- 
-        # ── Stats ─────────────────────────────────────────────────
-        # Total employees at this location
-        total_employees = User.objects.filter(
-            location  = location,
-            role__in  = EMPLOYEE_ROLES,
-            is_active = True
-        ).count()
- 
-        # Pending verifications = tasks awaiting review at this location
-        pending_verifications = Task.objects.filter(
-            location = location,
-            status   = 'awaiting_review'
-        ).count()
- 
-        # ── Today's attendance ────────────────────────────────────
-        today_records   = Attendance.objects.filter(
-            location = location,
-            date     = today
+
+        total_employees       = User.objects.filter(location=location, role__in=EMPLOYEE_ROLES, is_active=True).count()
+        pending_verifications = Task.objects.filter(location=location, status='awaiting_review').count()
+
+        # FIX: single aggregate for attendance stats
+        att_stats = Attendance.objects.filter(location=location, date=today).aggregate(
+            present = Count(Case(When(status='present', then=1), output_field=IntegerField())),
+            late    = Count(Case(When(status='late',    then=1), output_field=IntegerField())),
+            absent  = Count(Case(When(status='absent',  then=1), output_field=IntegerField())),
         )
-        present_count   = today_records.filter(status='present').count()
-        late_count      = today_records.filter(status='late').count()
-        absent_count    = today_records.filter(status='absent').count()
-        total_today     = total_employees
- 
+
         today_attendance = {
-            'total':   total_today,
-            'present': present_count,
-            'late':    late_count,
-            'absent':  absent_count,
+            'total':   total_employees,
+            'present': att_stats['present'],
+            'late':    att_stats['late'],
+            'absent':  att_stats['absent'],
         }
- 
-        # ── Today's staff ─────────────────────────────────────────
-        employees  = User.objects.filter(
-            location  = location,
-            role__in  = EMPLOYEE_ROLES,
-            is_active = True
-        ).select_related('location')
- 
+
+        # FIX: prefetch attendance to avoid N+1 in today_staff loop
+        employees = User.objects.filter(
+            location=location, role__in=EMPLOYEE_ROLES, is_active=True
+        ).prefetch_related(
+            Prefetch(
+                'attendances',
+                queryset=Attendance.objects.filter(date=today),
+                to_attr='today_attendances'
+            )
+        )
+
         today_staff = []
         for emp in employees:
-            attendance = Attendance.objects.filter(
-                user = emp,
-                date = today
-            ).first()
- 
-            # Get late minutes if late
+            attendance   = emp.today_attendances[0] if emp.today_attendances else None
             late_minutes = None
+
             if attendance and attendance.status == 'late' and attendance.clock_in:
-                # Calculate how late (assuming 9AM start)
                 from datetime import time as dt_time
-                scheduled   = dt_time(9, 0)
-                clock_in    = attendance.clock_in
+                scheduled = dt_time(9, 0)
+                clock_in  = attendance.clock_in
                 if clock_in > scheduled:
-                    diff        = (
-                        clock_in.hour * 60 + clock_in.minute
-                    ) - (
-                        scheduled.hour * 60 + scheduled.minute
-                    )
-                    late_minutes = diff
- 
+                    late_minutes = (clock_in.hour * 60 + clock_in.minute) - (scheduled.hour * 60 + scheduled.minute)
+
             today_staff.append({
-                'id':          emp.id,
-                'name':        f"{emp.first_name} {emp.last_name}".strip(),
-                'role':        emp.get_role_display(),
-                'status':      attendance.status if attendance else 'absent',
+                'id':           emp.id,
+                'name':         f"{emp.first_name} {emp.last_name}".strip(),
+                'role':         emp.get_role_display(),
+                'status':       attendance.status if attendance else 'absent',
                 'late_minutes': late_minutes,
-                'clock_in':    attendance.clock_in.strftime('%I:%M %p') if attendance and attendance.clock_in else None,
+                'clock_in':     attendance.clock_in.strftime('%I:%M %p') if attendance and attendance.clock_in else None,
             })
- 
-        # ── Recent task activity ──────────────────────────────────
-        recent_tasks_qs = Task.objects.filter(
-            location = location
-        ).select_related('assigned_to').order_by('-created_at')[:5]
- 
-        recent_tasks = []
+
+        recent_tasks_qs = Task.objects.filter(location=location).select_related('assigned_to').order_by('-created_at')[:5]
+        recent_tasks    = []
+        status_labels   = {
+            'pending': 'Pending', 'completed': 'Completed',
+            'awaiting_review': 'Awaiting Review', 'approved': 'Approved',
+            'rejected': 'Rejected', 'overdue': 'Overdue',
+        }
         for task in recent_tasks_qs:
             recent_tasks.append({
-                'id':            task.id,
-                'title':         task.title,
-                'assigned_to':   f"{task.assigned_to.first_name} {task.assigned_to.last_name}".strip(),
-                'due_date':      task.due_date.strftime('%b %d, %Y') if task.due_date else None,
-                'status':        task.status,
-                'status_display': {
-                    'pending':         'Pending',
-                    'completed':       'Completed',
-                    'awaiting_review': 'Awaiting Review',
-                    'approved':        'Approved',
-                    'rejected':        'Rejected',
-                    'overdue':         'Overdue',
-                }.get(task.status, task.status),
+                'id':             task.id,
+                'title':          task.title,
+                'assigned_to':    f"{task.assigned_to.first_name} {task.assigned_to.last_name}".strip(),
+                'due_date':       task.due_date.strftime('%b %d, %Y') if task.due_date else None,
+                'status':         task.status,
+                'status_display': status_labels.get(task.status, task.status),
             })
- 
+
         return Response({
-            'greeting':             greeting,
-            'date_display':         today.strftime('%A, %B %d, %Y'),
-            'location_name':        location.name,
+            'greeting':      greeting,
+            'date_display':  today.strftime('%A, %B %d, %Y'),
+            'location_name': location.name,
             'stats': {
                 'total_employees':       total_employees,
                 'pending_verifications': pending_verifications,
                 'today_attendance':      today_attendance,
             },
-            'today_staff':   today_staff,
-            'recent_tasks':  recent_tasks,
+            'today_staff':  today_staff,
+            'recent_tasks': recent_tasks,
         }, status=status.HTTP_200_OK)
 
 
@@ -1868,14 +1931,9 @@ class BranchManagerTaskViewSet(viewsets.ModelViewSet):
     search_fields      = ['title', 'description', 'assigned_to__first_name', 'assigned_to__last_name']
 
     def get_queryset(self):
-        manager = self.request.user
-
-        # ── All tasks for manager's location — no status filter here
-        queryset = Task.objects.filter(
-            location=manager.location
-        ).select_related(
-            'location', 'assigned_to', 'completed_by',
-            'approved_by', 'rejected_by', 'created_by'
+        manager  = self.request.user
+        queryset = Task.objects.filter(location=manager.location).select_related(
+            'location', 'assigned_to', 'completed_by', 'approved_by', 'rejected_by', 'created_by'
         ).order_by('-created_at')
 
         search = self.request.query_params.get('search')
@@ -1886,7 +1944,6 @@ class BranchManagerTaskViewSet(viewsets.ModelViewSet):
                 Q(assigned_to__first_name__icontains=search) |
                 Q(assigned_to__last_name__icontains=search)
             )
-
         return queryset
 
     def get_serializer_class(self):
@@ -1895,16 +1952,12 @@ class BranchManagerTaskViewSet(viewsets.ModelViewSet):
         if self.action in ['update', 'partial_update']:
             return TaskUpdateSerializer
         if self.action == 'list':
-            return BranchManagerTaskListSerializer  # ← use new serializer
+            return BranchManagerTaskListSerializer
         return TaskDetailSerializer
 
     def list(self, request, *args, **kwargs):
         manager  = request.user
-
-        # ── List only shows pending tasks ─────────────────────────
-        queryset = self.filter_queryset(
-            self.get_queryset().filter(status='pending')
-        )
+        queryset = self.filter_queryset(self.get_queryset().filter(status='pending'))
 
         page = self.paginate_queryset(queryset)
         if page is not None:
@@ -1923,35 +1976,22 @@ class BranchManagerTaskViewSet(viewsets.ModelViewSet):
 
     def create(self, request, *args, **kwargs):
         manager = request.user
-
         if not manager.location:
-            return Response(
-                {"error": "You are not assigned to any location."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return Response({"error": "You are not assigned to any location."}, status=status.HTTP_400_BAD_REQUEST)
 
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        # ── Validate employee belongs to manager's location ───────
         assigned_to = serializer.validated_data.get('assigned_to')
         if assigned_to.location != manager.location:
-            return Response(
-                {"error": "You can only assign tasks to employees in your location."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return Response({"error": "You can only assign tasks to employees in your location."}, status=status.HTTP_400_BAD_REQUEST)
 
-        task = serializer.save(
-            location   = manager.location,
-            created_by = request.user,
-        )
+        task = serializer.save(location=manager.location, created_by=request.user)
 
         ActivityLog.objects.create(
-            action      = 'task_assigned',
-            actor       = request.user,
-            task        = task,
-            target_user = task.assigned_to,
-            message     = f'Task "{task.title}" assigned to {task.assigned_to.get_full_name()}'
+            action='task_assigned', actor=request.user, task=task,
+            target_user=task.assigned_to,
+            message=f'Task "{task.title}" assigned to {task.assigned_to.get_full_name()}'
         )
 
         return Response({
@@ -1963,92 +2003,67 @@ class BranchManagerTaskViewSet(viewsets.ModelViewSet):
         task = self.get_object()
         return Response(TaskDetailSerializer(task).data, status=status.HTTP_200_OK)
 
+    def partial_update(self, request, *args, **kwargs):
+        task = self.get_object()
+        if task.status != 'pending':
+            return Response({"error": "Only pending tasks can be edited."}, status=status.HTTP_400_BAD_REQUEST)
+        if task.created_by != request.user:
+            return Response({"error": "You can only edit tasks you created."}, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = self.get_serializer(task, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        task = serializer.save()
+        return Response({'message': 'Task updated successfully.', 'task': TaskDetailSerializer(task).data}, status=status.HTTP_200_OK)
+
+    def destroy(self, request, *args, **kwargs):
+        task = self.get_object()
+        if task.status != 'pending':
+            return Response({"error": "Only pending tasks can be deleted."}, status=status.HTTP_400_BAD_REQUEST)
+        if task.created_by != request.user:
+            return Response({"error": "You can only delete tasks you created."}, status=status.HTTP_403_FORBIDDEN)
+        task.delete()
+        return Response({"message": "Task deleted successfully."}, status=status.HTTP_200_OK)
+
     @action(detail=True, methods=['post'], url_path='approve')
     def approve(self, request, pk=None):
         task = self.get_object()
-
         if task.status not in ['awaiting_review', 'rejected']:
-            return Response(
-                {"error": "Only awaiting review or rejected tasks can be approved."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return Response({"error": "Only awaiting review or rejected tasks can be approved."}, status=status.HTTP_400_BAD_REQUEST)
 
-        task.status           = 'approved'
-        task.approved_by      = request.user
-        task.approved_at      = timezone.now()
-        task.rejection_reason = None
+        task.status = 'approved'; task.approved_by = request.user; task.approved_at = timezone.now(); task.rejection_reason = None
         task.save(update_fields=['status', 'approved_by', 'approved_at', 'rejection_reason'])
-
-        ActivityLog.objects.create(
-            action      = 'task_approved',
-            actor       = request.user,
-            task        = task,
-            target_user = task.assigned_to,
-            message     = f'Task "{task.title}" approved for {task.assigned_to.get_full_name()}'
-        )
-
-        return Response({
-            'message': 'Task approved successfully.',
-            'task':    TaskDetailSerializer(task).data,
-        }, status=status.HTTP_200_OK)
+        ActivityLog.objects.create(action='task_approved', actor=request.user, task=task, target_user=task.assigned_to, message=f'Task "{task.title}" approved for {task.assigned_to.get_full_name()}')
+        return Response({'message': 'Task approved successfully.', 'task': TaskDetailSerializer(task).data}, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=['post'], url_path='reject')
     def reject(self, request, pk=None):
         task       = self.get_object()
         serializer = TaskRejectSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-
         if task.status not in ['awaiting_review', 'approved']:
-            return Response(
-                {"error": "Only awaiting review or approved tasks can be rejected."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        task.status           = 'rejected'
-        task.rejected_by      = request.user
-        task.rejected_at      = timezone.now()
-        task.rejection_reason = serializer.validated_data['rejection_reason']
+            return Response({"error": "Only awaiting review or approved tasks can be rejected."}, status=status.HTTP_400_BAD_REQUEST)
+
+        task.status = 'rejected'; task.rejected_by = request.user; task.rejected_at = timezone.now(); task.rejection_reason = serializer.validated_data['rejection_reason']
         task.save(update_fields=['status', 'rejected_by', 'rejected_at', 'rejection_reason'])
-
-        ActivityLog.objects.create(
-            action      = 'task_rejected',
-            actor       = request.user,
-            task        = task,
-            target_user = task.assigned_to,
-            message     = f'Task "{task.title}" rejected — {serializer.validated_data["rejection_reason"]}'
-        )
-
-        return Response({
-            'message': 'Task rejected.',
-            'task':    TaskDetailSerializer(task).data,
-        }, status=status.HTTP_200_OK)
+        ActivityLog.objects.create(action='task_rejected', actor=request.user, task=task, target_user=task.assigned_to, message=f'Task "{task.title}" rejected — {serializer.validated_data["rejection_reason"]}')
+        return Response({'message': 'Task rejected.', 'task': TaskDetailSerializer(task).data}, status=status.HTTP_200_OK)
 
 
 class BranchManagerLocationEmployeesView(APIView):
-    """Get employees for manager's location — for assign dropdown"""
     permission_classes = [IsBranchManager]
 
     def get(self, request):
         manager = request.user
-
         if not manager.location:
-            return Response(
-                {"error": "You are not assigned to any location."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return Response({"error": "You are not assigned to any location."}, status=status.HTTP_400_BAD_REQUEST)
 
-        employees = User.objects.filter(
-            location  = manager.location,
-            role__in  = ASSIGNABLE_ROLES,
-            is_active = True
-        )
-
+        employees  = User.objects.filter(location=manager.location, role__in=ASSIGNABLE_ROLES, is_active=True)
         serializer = LocationEmployeeSerializer(employees, many=True)
         return Response({
-            'location':  manager.location.name,
+            'location':    manager.location.name,
             'location_id': manager.location.id,
-            'employees': serializer.data,
+            'employees':   serializer.data,
         }, status=status.HTTP_200_OK)
-
 
 
 class BranchManagerVerificationView(APIView):
@@ -2056,59 +2071,34 @@ class BranchManagerVerificationView(APIView):
 
     def get(self, request):
         manager = request.user
-
         if not manager.location:
-            return Response(
-                {"error": "You are not assigned to any location."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return Response({"error": "You are not assigned to any location."}, status=status.HTTP_400_BAD_REQUEST)
 
         tab = request.query_params.get('tab', 'pending')
 
-        # ── Base queryset — only this location's tasks ─────────────
-        base_tasks = Task.objects.filter(
-            location=manager.location
-        ).select_related(
-            'assigned_to', 'approved_by',
-            'rejected_by', 'created_by'
+        base_tasks = Task.objects.filter(location=manager.location).select_related(
+            'location', 'assigned_to', 'approved_by', 'rejected_by', 'created_by'
         )
 
-        # ── Stats ──────────────────────────────────────────────────
-        stats = {
-            'awaiting_review': base_tasks.filter(status='awaiting_review').count(),
-            'approved':        base_tasks.filter(status='approved').count(),
-            'pending':         base_tasks.filter(status='pending').count(),
-            'overdue':         base_tasks.filter(status='overdue').count(),
-            'rejected':        base_tasks.filter(status='rejected').count(),
-        }
+        # FIX: single aggregate for stats instead of 5 separate counts
+        stats_data = base_tasks.aggregate(
+            awaiting_review = Count(Case(When(status='awaiting_review', then=1), output_field=IntegerField())),
+            approved        = Count(Case(When(status='approved',        then=1), output_field=IntegerField())),
+            pending         = Count(Case(When(status='pending',         then=1), output_field=IntegerField())),
+            overdue         = Count(Case(When(status='overdue',         then=1), output_field=IntegerField())),
+            rejected        = Count(Case(When(status='rejected',        then=1), output_field=IntegerField())),
+        )
 
-        # ── Tab filter ─────────────────────────────────────────────
-        TAB_STATUS_MAP = {
-            'pending':         'pending',
-            'awaiting_review': 'awaiting_review',
-            'approved':        'approved',
-            'rejected':        'rejected',
-            'overdue':         'overdue',
-        }
-
+        TAB_STATUS_MAP  = {'pending': 'pending', 'awaiting_review': 'awaiting_review', 'approved': 'approved', 'rejected': 'rejected', 'overdue': 'overdue'}
         selected_status = TAB_STATUS_MAP.get(tab, 'pending')
-        tasks           = base_tasks.filter(
-            status=selected_status
-        ).order_by('-created_at')
+        tasks           = base_tasks.filter(status=selected_status).order_by('-created_at')
 
-        # ── Paginate ───────────────────────────────────────────────
         paginator = PageNumberPagination()
         page      = paginator.paginate_queryset(tasks, request)
 
         data = []
         for task in page:
-            # ── Can edit/delete — only if branch manager created it
-            # AND task is pending
-            can_edit = (
-                task.created_by == manager and
-                task.status == 'pending'
-            )
-
+            can_edit = (task.created_by == manager and task.status == 'pending')
             data.append({
                 'id':             task.id,
                 'title':          task.title,
@@ -2118,49 +2108,38 @@ class BranchManagerVerificationView(APIView):
                 'status':         task.status,
                 'due_date':       task.due_date,
                 'location_name':  task.location.name if task.location else None,
-
-                # Created/assigned by
                 'created_by': {
-                    'id':   task.created_by.id if task.created_by else None,
-                    'name': f"{task.created_by.first_name} {task.created_by.last_name}".strip()
-                            if task.created_by else None,
-                    'role': task.created_by.get_role_display()
-                            if task.created_by else None,
+                    'id':   task.created_by.id   if task.created_by else None,
+                    'name': f"{task.created_by.first_name} {task.created_by.last_name}".strip() if task.created_by else None,
+                    'role': task.created_by.get_role_display() if task.created_by else None,
                 },
-
-                # Employee assigned to
                 'assigned_to': {
                     'id':    task.assigned_to.id,
                     'name':  f"{task.assigned_to.first_name} {task.assigned_to.last_name}".strip(),
                     'role':  task.assigned_to.get_role_display(),
                     'email': task.assigned_to.email,
                 },
-
-                # Submission info
-                'submitted_at': task.completed_at.strftime('%b %d, %I:%M %p')
-                                if task.completed_at else None,
-                'created_at':   task.created_at,
-
-                # Approval/rejection info
-                'approved_by':      f"{task.approved_by.first_name} {task.approved_by.last_name}".strip()
-                                    if task.approved_by else None,
+                'submitted_at':     task.completed_at.strftime('%b %d, %I:%M %p') if task.completed_at else None,
+                'created_at':       task.created_at,
+                'approved_by':      f"{task.approved_by.first_name} {task.approved_by.last_name}".strip() if task.approved_by else None,
                 'approved_at':      task.approved_at,
-                'rejected_by':      f"{task.rejected_by.first_name} {task.rejected_by.last_name}".strip()
-                                    if task.rejected_by else None,
+                'rejected_by':      f"{task.rejected_by.first_name} {task.rejected_by.last_name}".strip() if task.rejected_by else None,
                 'rejected_at':      task.rejected_at,
                 'rejection_reason': task.rejection_reason,
-
-                # ── Frontend uses these to show/hide buttons ───────
-                'can_edit':   can_edit,
-                'can_delete': can_edit,
+                'can_edit':         can_edit,
+                'can_delete':       can_edit,
             })
 
         return Response({
-            'stats':  stats,
-            'tab':    tab,
-            'tasks':  paginator.get_paginated_response(data).data,
+            'stats': stats_data,
+            'tab':   tab,
+            'tasks': paginator.get_paginated_response(data).data,
         }, status=status.HTTP_200_OK)
 
+
+# ================================================================
+# USER ATTENDANCE
+# ================================================================
 
 class UserAttendanceView(APIView):
     permission_classes = [IsSuperAdmin]
@@ -2172,9 +2151,8 @@ class UserAttendanceView(APIView):
         location_filter = request.query_params.get('location')
         search          = request.query_params.get('search', '').strip()
         user_id         = request.query_params.get('user')
+        now             = timezone.now()
 
-        # ── Date range ────────────────────────────────────────────
-        now = timezone.now()
         if period == 'yearly':
             start_date     = now - timedelta(days=365)
             days_in_period = 365
@@ -2188,112 +2166,78 @@ class UserAttendanceView(APIView):
             days_in_period = 7
             period_label   = 'week'
 
-        # ── Base employee queryset ────────────────────────────────
-        employees = User.objects.filter(
-            role__in  = EMPLOYEE_ROLES,
-            is_active = True
-        ).select_related('location').order_by('first_name')
+        employees = User.objects.filter(role__in=EMPLOYEE_ROLES, is_active=True).select_related('location').order_by('first_name')
 
         if location_filter:
             employees = employees.filter(location_id=location_filter)
-
         if search:
             employees = employees.filter(
                 db_models.Q(first_name__icontains=search) |
                 db_models.Q(last_name__icontains=search)  |
                 db_models.Q(email__icontains=search)
             )
-
         if user_id:
             employees = employees.filter(id=user_id)
 
-        # ── Filter options for dropdowns ──────────────────────────
-        filter_options = {
-            'locations': list(
-                Location.objects.filter(status='active').values('id', 'name')
-            )
-        }
+        filter_options = {'locations': list(Location.objects.filter(status='active').values('id', 'name'))}
 
-        # ── Drill-down: single employee ───────────────────────────
         if user_id or employees.count() == 1:
             employee = employees.first()
             if not employee:
-                return Response(
-                    {"error": "Employee not found."},
-                    status=status.HTTP_404_NOT_FOUND
-                )
-            return self._detail_view(
-                request, employee, start_date,
-                days_in_period, period, period_label,
-                filter_options, now
-            )
+                return Response({"error": "Employee not found."}, status=status.HTTP_404_NOT_FOUND)
+            return self._detail_view(request, employee, start_date, days_in_period, period, period_label, filter_options, now)
 
-        # ── Default: summary table ────────────────────────────────
-        return self._summary_view(
-            request, employees, start_date,
-            days_in_period, period, period_label,
-            filter_options
-        )
+        return self._summary_view(request, employees, start_date, days_in_period, period, period_label, filter_options)
 
-    # ================================================================
-    # SUMMARY VIEW — all employees aggregated
-    # ================================================================
     def _summary_view(self, request, employees, start_date, days_in_period, period, period_label, filter_options):
+        emp_ids = list(employees.values_list('id', flat=True))
+
+        att_bulk_qs = (
+            Attendance.objects
+            .filter(user_id__in=emp_ids, date__gte=start_date.date())
+            .values('user_id', 'status')
+            .annotate(total=Count('id'))
+        )
+        att_bulk_map = {}
+        for row in att_bulk_qs:
+            att_bulk_map.setdefault(row['user_id'], {})[row['status']] = row['total']
+
         summary = []
-
         for employee in employees:
-            records       = Attendance.objects.filter(
-                user      = employee,
-                date__gte = start_date.date()
-            )
-            total_present = records.filter(status='present').count()
-            total_late    = records.filter(status='late').count()
-            total_absent  = records.filter(status='absent').count()
-
+            emp_data = att_bulk_map.get(employee.id, {})
             summary.append({
                 'id':            employee.id,
                 'name':          f"{employee.first_name} {employee.last_name}".strip(),
                 'role':          employee.get_role_display(),
                 'location':      employee.location.name if employee.location else None,
                 'location_id':   employee.location.id   if employee.location else None,
-                'total_present': total_present,
-                'total_late':    total_late,
-                'total_absent':  total_absent,
+                'total_present': emp_data.get('present', 0),
+                'total_late':    emp_data.get('late',    0),
+                'total_absent':  emp_data.get('absent',  0),
             })
 
-        # ── Paginate ──────────────────────────────────────────────
         paginator      = PageNumberPagination()
         page           = paginator.paginate_queryset(summary, request)
         paginated_data = paginator.get_paginated_response(page).data
 
         return Response({
-            'view':           'summary',
-            'period':         period,
-            'period_label':   period_label,
-            'employees':      paginated_data,   
+            'view':         'summary',
+            'period':       period,
+            'period_label': period_label,
+            'employees':    paginated_data,
         }, status=status.HTTP_200_OK)
 
-    # ================================================================
-    # DETAIL VIEW — single employee daily breakdown
-    # ================================================================
     def _detail_view(self, request, employee, start_date, days_in_period, period, period_label, filter_options, now):
-        records        = Attendance.objects.filter(
-            user      = employee,
-            date__gte = start_date.date()
-        ).order_by('date')
+        records = Attendance.objects.filter(user=employee, date__gte=start_date.date()).order_by('date')
 
-        # ── Stat cards ────────────────────────────────────────────
-        total_present = records.filter(status='present').count()
-        total_late    = records.filter(status='late').count()
-        total_absent  = records.filter(status='absent').count()
-
-        # ── Count weekdays in period ──────────────────────────────
-        total_weekdays = sum(
-            1 for i in range(days_in_period)
-            if (now - timedelta(days=i)).date().weekday() < 5
+        # FIX: single aggregate for stats
+        att_stats = records.aggregate(
+            present = Count(Case(When(status='present', then=1), output_field=IntegerField())),
+            late    = Count(Case(When(status='late',    then=1), output_field=IntegerField())),
+            absent  = Count(Case(When(status='absent',  then=1), output_field=IntegerField())),
         )
 
-        # ── Build daily log ───────────────────────────────────────
+        total_weekdays = sum(1 for i in range(days_in_period) if (now - timedelta(days=i)).date().weekday() < 5)
         attendance_map = {r.date: r for r in records}
         daily_log      = []
 
@@ -2301,24 +2245,15 @@ class UserAttendanceView(APIView):
             day        = (now - timedelta(days=i)).date()
             record     = attendance_map.get(day)
             is_weekend = day.weekday() >= 5
-
-            if is_weekend:
-                day_status = 'weekend'
-            elif record:
-                day_status = record.status
-            else:
-                day_status = 'absent'
-
+            day_status = 'weekend' if is_weekend else (record.status if record else 'absent')
             daily_log.append({
                 'date':         str(day),
                 'date_display': day.strftime('%b %d, %Y'),
-                'role':          employee.get_role_display(),
+                'role':         employee.get_role_display(),
                 'status':       day_status,
-                'location':      employee.location.name if employee.location else None,
-
+                'location':     employee.location.name if employee.location else None,
             })
 
-        # ── Paginate daily log ────────────────────────────────────
         paginator      = PageNumberPagination()
         page           = paginator.paginate_queryset(daily_log, request)
         paginated_data = paginator.get_paginated_response(page).data
@@ -2335,24 +2270,26 @@ class UserAttendanceView(APIView):
                 'location': employee.location.name if employee.location else None,
             },
             'stats': {
-                'total_present':  total_present,
-                'total_late':     total_late,
-                'total_absent':   total_absent,
+                'total_present':  att_stats['present'],
+                'total_late':     att_stats['late'],
+                'total_absent':   att_stats['absent'],
                 'total_weekdays': total_weekdays,
                 'period_label':   period_label,
             },
-            'attendance_log':  paginated_data,
+            'attendance_log': paginated_data,
         }, status=status.HTTP_200_OK)
 
+
+# ================================================================
+# NOTIFICATION VIEWSET
+# ================================================================
 
 class NotificationViewSet(viewsets.ModelViewSet):
     permission_classes = [IsSuperAdmin]
     http_method_names  = ['get', 'post', 'delete']
 
     def get_queryset(self):
-        return Notification.objects.select_related(
-            'sent_by', 'recipient', 'location'
-        ).order_by('-created_at')
+        return Notification.objects.select_related('sent_by', 'recipient', 'location').order_by('-created_at')
 
     def get_serializer_class(self):
         if self.action == 'create':
@@ -2362,17 +2299,19 @@ class NotificationViewSet(viewsets.ModelViewSet):
     def list(self, request, *args, **kwargs):
         queryset = self.get_queryset()
 
-        # ── Stats ────────────────────────────────────────────────
+        # FIX: single aggregate for stats
+        stats_data = queryset.aggregate(
+            total_sent = Count('id'),
+            delivered  = Count(Case(When(status='sent', then=1), output_field=IntegerField())),
+        )
         stats = NotificationStatsSerializer({
-            'total_sent':       queryset.count(),
-            'delivered':        queryset.filter(status='sent').count(),
+            'total_sent':       stats_data['total_sent'],
+            'delivered':        stats_data['delivered'],
             'active_locations': Location.objects.filter(status='active').count(),
         }).data
 
-        # ── Recent notifications ──────────────────────────────────
         recent     = queryset[:10]
         serializer = NotificationSerializer(recent, many=True)
-
         return Response({
             'stats':                stats,
             'recent_notifications': serializer.data,
@@ -2386,25 +2325,16 @@ class NotificationViewSet(viewsets.ModelViewSet):
         location = serializer.validated_data.get('location')
         message  = serializer.validated_data['message']
 
-        # ── Determine recipients ──────────────────────────────────
         if email:
-            # Send to specific user
             try:
                 recipients = [User.objects.get(email=email, is_active=True)]
             except User.DoesNotExist:
-                return Response(
-                    {"error": "No active user found with this email."},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
+                return Response({"error": "No active user found with this email."}, status=status.HTTP_400_BAD_REQUEST)
         else:
-            # Send to ALL active users except super_admin
-            recipients = list(User.objects.filter(
-                is_active=True
-            ).exclude(role='super_admin'))
+            recipients = list(User.objects.filter(is_active=True).exclude(role='super_admin'))
 
-        # ── Send emails and save records ──────────────────────────
-        sent_count    = 0
-        failed_count  = 0
+        sent_count   = 0
+        failed_count = 0
 
         for recipient in recipients:
             notification_status = 'sent'
@@ -2441,214 +2371,4 @@ class NotificationViewSet(viewsets.ModelViewSet):
     def destroy(self, request, *args, **kwargs):
         notification = self.get_object()
         notification.delete()
-        return Response(
-            {"message": "Notification deleted."},
-            status=status.HTTP_200_OK
-        )
-    
-
-# ================================================================
-# SUPER ADMIN — QR SECTION
-# ================================================================
-
-class SuperAdminQRView(APIView):
-    """Super Admin generates and manages QR for any location"""
-    permission_classes = [IsSuperAdmin]
-
-    def get(self, request):
-        location_filter = request.query_params.get('location')
-
-        # ── Active QR sessions ────────────────────────────────────
-        active_sessions = QRSession.objects.filter(
-            is_active=True
-        ).select_related('location', 'created_by')
-
-        if location_filter:
-            active_sessions = active_sessions.filter(location_id=location_filter)
-
-        active_data = []
-        for session in active_sessions:
-            if session.is_expired:
-                session.is_active = False
-                session.save(update_fields=['is_active'])
-                continue
-            active_data.append({
-                "id":               session.id,
-                "token":            session.token,
-                "location":         session.location.name,
-                "location_id":      session.location.id,
-                "refresh_interval": session.refresh_interval,
-                "interval_display": session.get_refresh_interval_display(),
-                "created_at":       session.created_at,
-                "expires_at":       session.expires_at,
-                "seconds_left":     max(0, int((session.expires_at - timezone.now()).total_seconds())),
-                "present_count":    session.present_count,
-                "late_count":       session.late_count,
-                "absent_count":     session.absent_count,
-            })
-
-        # ── QR History ────────────────────────────────────────────
-        history = QRSession.objects.all().order_by('-created_at')
-        if location_filter:
-            history = history.filter(location_id=location_filter)
-
-        paginator      = PageNumberPagination()
-        page           = paginator.paginate_queryset(history, request)
-        serializer     = QRSessionListSerializer(page, many=True)
-        paginated_data = paginator.get_paginated_response(serializer.data).data
-
-        locations = Location.objects.filter(status='active').values('id', 'name')
-
-        return Response({
-            "active_sessions": active_data,
-            "history":         paginated_data,
-            "filter_options": {
-                "locations": list(locations),
-            }
-        }, status=status.HTTP_200_OK)
-
-    def post(self, request):
-        """Generate QR for a specific location"""
-        location_id = request.data.get('location') or request.data.get('location_id')
-        if not location_id:
-            return Response(
-                {"error": "location is required."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        try:
-            location = Location.objects.get(id=location_id, status='active')
-        except Location.DoesNotExist:
-            return Response(
-                {"error": "Location not found."},
-                status=status.HTTP_404_NOT_FOUND
-            )
-
-        refresh_interval = int(request.data.get('refresh_interval', 3))
-        valid_intervals  = [1, 3, 5, 10, 30]
-
-        if refresh_interval not in valid_intervals:
-            return Response(
-                {"error": f"Invalid interval. Choose from {valid_intervals}"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        deactivate_old_qr_sessions(location)
-
-        qr_session = QRSession.objects.create(
-            location         = location,
-            created_by       = request.user,
-            token            = generate_qr_token(),
-            refresh_interval = refresh_interval,
-            expires_at       = timezone.now() + timedelta(minutes=refresh_interval),
-            is_active        = True,
-        )
-
-        return Response({
-            "message":    "QR session generated successfully.",
-            "qr_session": QRSessionSerializer(qr_session).data,
-        }, status=status.HTTP_201_CREATED)
-
-
-class SuperAdminQRDetailView(APIView):
-    """View attendance details for a specific QR session"""
-    permission_classes = [IsSuperAdmin]
-
-    def get(self, request, pk):
-        try:
-            qr_session = QRSession.objects.get(pk=pk)
-        except QRSession.DoesNotExist:
-            return Response(
-                {"error": "QR session not found."},
-                status=status.HTTP_404_NOT_FOUND
-            )
-
-        attendances = Attendance.objects.filter(
-            qr_session=qr_session
-        ).select_related('user', 'location')
-
-        return Response({
-            "qr_session":  QRSessionSerializer(qr_session).data,
-            "attendances": AttendanceSerializer(attendances, many=True).data,
-        }, status=status.HTTP_200_OK)
-
-
-class SuperAdminQRIntervalListView(APIView):
-    """Get list of available QR refresh intervals"""
-    permission_classes = [IsSuperAdmin]
-
-    def get(self, request):
-        intervals = [
-            {"value": 1,  "label": "Every 1 minute"},
-            {"value": 3,  "label": "Every 3 minutes"},
-            {"value": 5,  "label": "Every 5 minutes"},
-            {"value": 10, "label": "Every 10 minutes"},
-            {"value": 30, "label": "Every 30 minutes"},
-        ]
-        return Response({"intervals": intervals}, status=status.HTTP_200_OK)
-
-
-# ================================================================
-# CLOCK IN USER — VIEW QR
-# ================================================================
-
-class ClockInUserQRView(APIView):
-    """Clock-in user sees current active QR for their location"""
-    permission_classes = [IsClockInUser]
-
-    def get(self, request):
-        user = request.user
-
-        if not user.location:
-            return Response(
-                {"error": "You are not assigned to any location."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        qr_session = QRSession.objects.filter(
-            location  = user.location,
-            is_active = True
-        ).first()
-
-        if not qr_session:
-            return Response({
-                "message":      "No active QR session. Please contact admin.",
-                "qr_session":   None,
-                "location":     user.location.name,
-                "seconds_left": 0,
-            }, status=status.HTTP_200_OK)
-
-        if qr_session.is_expired:
-            qr_session.is_active = False
-            qr_session.save(update_fields=['is_active'])
-            return Response({
-                "message":      "QR session has expired. Please contact admin.",
-                "qr_session":   None,
-                "location":     user.location.name,
-                "seconds_left": 0,
-            }, status=status.HTTP_200_OK)
-
-        seconds_left = max(
-            0,
-            int((qr_session.expires_at - timezone.now()).total_seconds())
-        )
-
-        return Response({
-            "message":  "Active QR session found.",
-            "location": user.location.name,
-            "user": {
-                "id":    user.id,
-                "name":  f"{user.first_name} {user.last_name}".strip(),
-                "email": user.email,
-                "role":  user.get_role_display(),
-            },
-            "qr_session": {
-                "id":               qr_session.id,
-                "token":            qr_session.token,
-                "refresh_interval": qr_session.refresh_interval,
-                "interval_display": qr_session.get_refresh_interval_display(),
-                "created_at":       qr_session.created_at,
-                "expires_at":       qr_session.expires_at,
-            },
-            "seconds_left": seconds_left,
-        }, status=status.HTTP_200_OK)
+        return Response({"message": "Notification deleted."}, status=status.HTTP_200_OK)

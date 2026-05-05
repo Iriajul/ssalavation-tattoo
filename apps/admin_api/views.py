@@ -53,7 +53,7 @@ from .serializers import (
     TaskUpdateSerializer,
     TaskRejectSerializer,
     TaskStatsSerializer,
-    FireUserSerializer,           # ← was missing from imports
+    FireUserSerializer,           
     LocationEmployeeSerializer,
     InstructionSerializer,
     InstructionListSerializer,
@@ -67,6 +67,22 @@ User = get_user_model()
 
 EMPLOYEE_ROLES   = ['tattoo_artist', 'body_piercer', 'staff']
 ASSIGNABLE_ROLES = ['tattoo_artist', 'body_piercer', 'staff']
+
+# ================================================================
+# HELPERS
+# ================================================================
+
+def attendance_stats(qs):
+    """
+    Reusable attendance aggregation helper.
+    Accepts any Attendance queryset and returns present/late/absent counts.
+    Avoids repeating the same Count(Case(When(...))) pattern everywhere.
+    """
+    return qs.aggregate(
+        present = Count(Case(When(status='present', then=1), output_field=IntegerField())),
+        late    = Count(Case(When(status='late',    then=1), output_field=IntegerField())),
+        absent  = Count(Case(When(status='absent',  then=1), output_field=IntegerField())),
+    )
 
 
 # ================================================================
@@ -738,7 +754,6 @@ class InstructionViewSet(viewsets.ModelViewSet):
 
     def list(self, request, *args, **kwargs):
         queryset     = self.filter_queryset(self.get_queryset())
-        all_instruct = Instruction.objects.all()
         role_filter  = request.query_params.get('role')
 
         # NOTE: JSONField contains queries can use aggregate easily
@@ -1187,10 +1202,8 @@ class ReportsAnalyticsView(APIView):
 
         elif period == 'today':
             # 1 query
-            today_stats = Attendance.objects.filter(date=now.date()).aggregate(
-                present = Count(Case(When(status='present', then=1), output_field=IntegerField())),
-                late    = Count(Case(When(status='late',    then=1), output_field=IntegerField())),
-                absent  = Count(Case(When(status='absent',  then=1), output_field=IntegerField())),
+            today_stats = attendance_stats(
+                Attendance.objects.filter(date=now.date())
             )
             attendance_trend.append({
                 'date':    now.strftime('%b %d'),
@@ -1594,23 +1607,38 @@ class SuperAdminQRView(APIView):
     def get(self, request):
         location_filter = request.query_params.get('location')
 
-        active_sessions = QRSession.objects.filter(is_active=True).select_related('location', 'created_by')
+        # FIX 1: Batch expire all stale sessions in 1 query
+        # instead of expiring one-by-one inside the loop (N writes)
+        QRSession.objects.filter(
+            is_active  = True,
+            expires_at__lt = timezone.now()
+        ).update(is_active=False)
+
+        # Now fetch only genuinely active sessions
+        active_sessions = QRSession.objects.filter(
+            is_active=True
+        ).select_related('location', 'created_by')
+
         if location_filter:
             active_sessions = active_sessions.filter(location_id=location_filter)
 
+        # FIX 2: Bulk fetch attendance stats for all active sessions — 1 query
+        # instead of 1 aggregate query per session in the loop
+        session_ids = list(active_sessions.values_list('id', flat=True))
+
+        att_bulk_qs = (
+            Attendance.objects
+            .filter(qr_session_id__in=session_ids)
+            .values('qr_session_id', 'status')
+            .annotate(total=Count('id'))
+        )
+        att_bulk_map = {}
+        for row in att_bulk_qs:
+            att_bulk_map.setdefault(row['qr_session_id'], {})[row['status']] = row['total']
+
         active_data = []
         for session in active_sessions:
-            if session.is_expired:
-                session.is_active = False
-                session.save(update_fields=['is_active'])
-                continue
-
-            # FIX: use aggregate instead of 3 property calls (3 DB hits per session)
-            att_stats = Attendance.objects.filter(qr_session=session).aggregate(
-                present = Count(Case(When(status='present', then=1), output_field=IntegerField())),
-                late    = Count(Case(When(status='late',    then=1), output_field=IntegerField())),
-                absent  = Count(Case(When(status='absent',  then=1), output_field=IntegerField())),
-            )
+            stats = att_bulk_map.get(session.id, {})
             active_data.append({
                 "id":               session.id,
                 "token":            session.token,
@@ -1619,18 +1647,22 @@ class SuperAdminQRView(APIView):
                 "refresh_interval": session.refresh_interval,
                 "interval_display": session.get_refresh_interval_display(),
                 "created_at":       session.created_at,
+                # FIX 3: Send expires_at instead of seconds_left
+                # Let frontend calculate countdown — avoids stale data
+                # and removes server-side recalculation on every request
                 "expires_at":       session.expires_at,
-                "seconds_left":     max(0, int((session.expires_at - timezone.now()).total_seconds())),
-                "present_count":    att_stats['present'],
-                "late_count":       att_stats['late'],
-                "absent_count":     att_stats['absent'],
+                "present_count":    stats.get('present', 0),
+                "late_count":       stats.get('late',    0),
+                "absent_count":     stats.get('absent',  0),
             })
 
-        history = QRSession.objects.all().annotate(
-            present_count=Count('attendances', filter=Q(attendances__status='present')),
-            late_count=Count('attendances', filter=Q(attendances__status='late')),
-            absent_count=Count('attendances', filter=Q(attendances__status='absent')),
+        # History — annotated queryset so serializer counts work
+        history = QRSession.objects.annotate(
+            present_count = Count('attendances', filter=Q(attendances__status='present')),
+            late_count    = Count('attendances', filter=Q(attendances__status='late')),
+            absent_count  = Count('attendances', filter=Q(attendances__status='absent')),
         ).order_by('-created_at')
+
         if location_filter:
             history = history.filter(location_id=location_filter)
 
@@ -1659,7 +1691,10 @@ class SuperAdminQRView(APIView):
         refresh_interval = int(request.data.get('refresh_interval', 3))
         valid_intervals  = [1, 3, 5, 10, 30]
         if refresh_interval not in valid_intervals:
-            return Response({"error": f"Invalid interval. Choose from {valid_intervals}"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"error": f"Invalid interval. Choose from {valid_intervals}"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         deactivate_old_qr_sessions(location)
 
@@ -1683,15 +1718,21 @@ class SuperAdminQRDetailView(APIView):
 
     def get(self, request, pk):
         qr_session = QRSession.objects.filter(pk=pk).annotate(
-            present_count=Count('attendances', filter=Q(attendances__status='present')),
-            late_count=Count('attendances', filter=Q(attendances__status='late')),
-            absent_count=Count('attendances', filter=Q(attendances__status='absent')),
+            present_count = Count('attendances', filter=Q(attendances__status='present')),
+            late_count    = Count('attendances', filter=Q(attendances__status='late')),
+            absent_count  = Count('attendances', filter=Q(attendances__status='absent')),
         ).first()
 
         if not qr_session:
-            return Response({"error": "QR session not found."}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {"error": "QR session not found."},
+                status=status.HTTP_404_NOT_FOUND
+            )
 
-        attendances = Attendance.objects.filter(qr_session=qr_session).select_related('user', 'location')
+        attendances = Attendance.objects.filter(
+            qr_session=qr_session
+        ).select_related('user', 'location')
+
         return Response({
             "qr_session":  QRSessionSerializer(qr_session).data,
             "attendances": AttendanceSerializer(attendances, many=True).data,
@@ -1794,12 +1835,25 @@ class BranchManagerProfileView(APIView):
         }, status=status.HTTP_200_OK)
 
     def patch(self, request):
-        manager        = request.user
-        allowed_fields = ['first_name', 'last_name', 'phone', 'profile_photo']
+        manager = request.user
+        photo   = request.FILES.get('profile_photo')
+
+        if photo:
+            import cloudinary.uploader
+            result = cloudinary.uploader.upload(photo, folder="profile_photos")
+            manager.profile_photo = result['secure_url']
+            manager.save(update_fields=['profile_photo'])
+            return Response({
+                "message":       "Profile photo updated.",
+                "profile_photo": manager.profile_photo,
+            }, status=status.HTTP_200_OK)
+
+        allowed_fields = ['first_name', 'last_name', 'phone']
         for field in allowed_fields:
             if field in request.data:
                 setattr(manager, field, request.data[field])
         manager.save()
+
         return Response({
             'message':       'Profile updated successfully.',
             'id':            manager.id,
@@ -1821,6 +1875,29 @@ class BranchManagerProfileView(APIView):
             } if manager.location else None,
         }, status=status.HTTP_200_OK)
 
+
+class BranchManagerChangePasswordView(APIView):
+    permission_classes = [IsBranchManager]
+
+    def post(self, request):
+        serializer = AdminChangePasswordSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        user = request.user
+        if not user.check_password(serializer.validated_data['current_password']):
+            return Response(
+                {"error": "Current password is incorrect."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        user.set_password(serializer.validated_data['new_password'])
+        user.save(update_fields=['password'])
+
+        tokens = OutstandingToken.objects.filter(user=user)
+        for token in tokens:
+            BlacklistedToken.objects.get_or_create(token=token)
+
+        return Response({"message": "Password updated successfully. Please login again."})
 
 class BranchManagerDashboardView(APIView):
     permission_classes = [IsBranchManager]
@@ -1849,10 +1926,8 @@ class BranchManagerDashboardView(APIView):
         pending_verifications = Task.objects.filter(location=location, status='awaiting_review').count()
 
         # FIX: single aggregate for attendance stats
-        att_stats = Attendance.objects.filter(location=location, date=today).aggregate(
-            present = Count(Case(When(status='present', then=1), output_field=IntegerField())),
-            late    = Count(Case(When(status='late',    then=1), output_field=IntegerField())),
-            absent  = Count(Case(When(status='absent',  then=1), output_field=IntegerField())),
+        att_stats = attendance_stats(
+            Attendance.objects.filter(location=location, date=today)
         )
 
         today_attendance = {
@@ -1924,7 +1999,410 @@ class BranchManagerDashboardView(APIView):
             'recent_tasks': recent_tasks,
         }, status=status.HTTP_200_OK)
 
+class BranchManagerReportsView(APIView):
+    permission_classes = [IsBranchManager]
 
+    def get(self, request):
+        manager = request.user
+        location = manager.location
+
+        if not location:
+            return Response(
+                {"error": "You are not assigned to any location."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        period        = request.query_params.get('period', 'weekly')
+        status_filter = request.query_params.get('status')
+        search        = request.query_params.get('search', '').strip()
+        user_id       = request.query_params.get('user')
+        now           = timezone.now()
+
+        # ───────────────────────── PERIOD ─────────────────────────
+        if period == 'today':
+            start_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            days_in_period = 1
+        elif period == 'monthly':
+            start_date = now - timedelta(days=30)
+            days_in_period = 30
+        elif period == 'yearly':
+            start_date = now - timedelta(days=365)
+            days_in_period = 365
+        else:
+            start_date = now - timedelta(days=7)
+            days_in_period = 7
+
+        # ───────────────────── WORKING DAYS ───────────────────────
+        working_days = max(
+            sum(
+                1 for i in range(days_in_period)
+                if (now - timedelta(days=i)).date().weekday() < 5
+            ),
+            1
+        )
+
+        # ───────────────────── EMPLOYEES ──────────────────────────
+        employees = User.objects.filter(
+            location=location,
+            role__in=EMPLOYEE_ROLES,
+            is_active=True,
+        ).order_by('first_name')
+
+        if search:
+            employees = employees.filter(
+                Q(first_name__icontains=search) |
+                Q(last_name__icontains=search)
+            )
+
+        emp_ids = list(employees.values_list('id', flat=True))
+
+        # ───────────────────── DETAIL ROUTE ───────────────────────
+        if user_id:
+            return self._detail_view(
+                request, user_id, location, start_date,
+                days_in_period, working_days, period, status_filter, now
+            )
+
+        if search and len(emp_ids) == 1:
+            return self._detail_view(
+                request, emp_ids[0], location, start_date,
+                days_in_period, working_days, period, status_filter, now
+            )
+
+        # ───────────────────── TASK BASE QUERY ────────────────────
+        task_qs = Task.objects.filter(
+            location=location,
+            created_at__gte=start_date,
+        )
+
+        if status_filter and status_filter != 'all':
+            task_qs = task_qs.filter(status=status_filter)
+
+        top_stats = task_qs.aggregate(
+            completed=Count(Case(
+                When(status__in=['completed', 'approved'], then=1),
+                output_field=IntegerField()
+            )),
+            overdue=Count(Case(
+                When(status='overdue', then=1),
+                output_field=IntegerField()
+            )),
+            in_progress=Count(Case(
+                When(status='pending', then=1),
+                output_field=IntegerField()
+            )),
+        )
+
+        # ───────────────────── ATTENDANCE (FIXED) ─────────────────
+        att_qs = Attendance.objects.filter(
+            user_id__in=emp_ids,
+            date__gte=start_date.date(),
+        )
+
+        present_count = att_qs.filter(status__in=['present', 'late']).count()
+
+        expected_total = len(emp_ids) * working_days
+        avg_attendance = round((present_count / expected_total) * 100) if expected_total else 0
+
+        # ───────────────────── BULK TASK ──────────────────────────
+        task_bulk_qs = (
+            Task.objects
+            .filter(
+                assigned_to_id__in=emp_ids,
+                location=location,
+                created_at__gte=start_date,
+            )
+            .values('assigned_to_id')
+            .annotate(
+                completed=Count(Case(
+                    When(status__in=['completed', 'approved'], then=1),
+                    output_field=IntegerField()
+                )),
+                overdue=Count(Case(
+                    When(status='overdue', then=1),
+                    output_field=IntegerField()
+                )),
+            )
+        )
+
+        task_bulk_map = {r['assigned_to_id']: r for r in task_bulk_qs}
+
+        # ───────────────────── BULK ATTENDANCE ────────────────────
+        att_bulk_qs = (
+            Attendance.objects
+            .filter(user_id__in=emp_ids, date__gte=start_date.date())
+            .values('user_id', 'status')
+            .annotate(total=Count('id'))
+        )
+
+        att_bulk_map = {}
+        for r in att_bulk_qs:
+            att_bulk_map.setdefault(r['user_id'], {})[r['status']] = r['total']
+
+        task_completion_chart = []
+        attendance_chart = []
+        employee_breakdown = []
+
+        for emp in employees:
+            emp_name = f"{emp.first_name} {emp.last_name}".strip()
+
+            task_data = task_bulk_map.get(emp.id, {})
+            att_data = att_bulk_map.get(emp.id, {})
+
+            completed = task_data.get('completed', 0)
+            overdue = task_data.get('overdue', 0)
+
+            present = att_data.get('present', 0)
+            late = att_data.get('late', 0)
+
+            attended = present + late
+
+            # FIXED: safer attendance logic
+            att_rate = round((attended / working_days) * 100) if working_days else 0
+
+            actual_days = sum(att_data.values())
+            absent = max(0, working_days - min(actual_days, working_days))
+
+            task_completion_chart.append({
+                'employee': emp_name,
+                'completed': completed,
+                'overdue': overdue,
+            })
+
+            attendance_chart.append({
+                'employee': emp_name,
+                'attendance_rate': min(att_rate, 100),
+            })
+
+            employee_breakdown.append({
+                'id': emp.id,
+                'name': emp_name,
+                'role': emp.get_role_display(),
+                'total_present': present,
+                'total_late': late,
+                'total_absent': absent,
+                'attendance_rate': min(att_rate, 100),
+                'completed': completed,
+                'overdue': overdue,
+            })
+
+        # ───────────────────── TASK LOG ───────────────────────────
+        task_log_qs = Task.objects.filter(
+            location=location,
+            created_at__gte=start_date,
+        ).select_related('assigned_to', 'created_by').order_by('-created_at', '-id')
+
+        if status_filter and status_filter != 'all':
+            task_log_qs = task_log_qs.filter(status=status_filter)
+
+        if search:
+            task_log_qs = task_log_qs.filter(
+                Q(title__icontains=search) |
+                Q(assigned_to__first_name__icontains=search) |
+                Q(assigned_to__last_name__icontains=search)
+            )
+
+        paginator = PageNumberPagination()
+        paginator.page_size = 5
+        task_log_page = paginator.paginate_queryset(task_log_qs, request)
+
+        role_map = {
+            'branch_manager': 'Store Manager',
+            'district_manager': 'District Manager',
+            'super_admin': 'Super Admin',
+        }
+
+        task_log = [
+            {
+                'id': t.id,
+                'title': t.title,
+                'assigned_to': f"{t.assigned_to.first_name} {t.assigned_to.last_name}".strip(),
+                'assigned_by': role_map.get(t.created_by.role, 'Super Admin') if t.created_by else 'Super Admin',
+                'due_date': t.due_date,
+                'status': t.status,
+            }
+            for t in task_log_page
+        ]
+
+        task_log_paginated = paginator.get_paginated_response(task_log).data
+
+        return Response({
+            'period': period,
+            'stats': {
+                'completed': top_stats['completed'],
+                'overdue': top_stats['overdue'],
+                'in_progress': top_stats['in_progress'],
+                'avg_attendance': avg_attendance,
+            },
+            'task_completion_chart': task_completion_chart,
+            'attendance_chart': attendance_chart,
+            'employee_breakdown': employee_breakdown,
+            'task_log': task_log_paginated['results'],
+            'task_log_meta': {
+                'count': task_log_paginated['count'],
+                'next': task_log_paginated['next'],
+                'previous': task_log_paginated['previous'],
+            },
+        }, status=status.HTTP_200_OK)
+
+    # ─────────────────────────────────────────────
+    # DETAIL VIEW
+    # ─────────────────────────────────────────────
+    def _detail_view(self, request, user_id, location, start_date,
+                     days_in_period, working_days, period, status_filter, now):
+
+        try:
+            employee = User.objects.get(
+                id=user_id,
+                location=location,
+                role__in=EMPLOYEE_ROLES
+            )
+        except User.DoesNotExist:
+            return Response(
+                {"error": "Employee not found."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        emp_name = f"{employee.first_name} {employee.last_name}".strip()
+
+        task_qs = Task.objects.filter(
+            assigned_to=employee,
+            location=location,
+            created_at__gte=start_date,
+        )
+
+        if status_filter and status_filter != 'all':
+            task_qs = task_qs.filter(status=status_filter)
+
+        task_stats = task_qs.aggregate(
+            completed=Count(Case(
+                When(status__in=['completed', 'approved'], then=1),
+                output_field=IntegerField()
+            )),
+            overdue=Count(Case(
+                When(status='overdue', then=1),
+                output_field=IntegerField()
+            )),
+            in_progress=Count(Case(
+                When(status='pending', then=1),
+                output_field=IntegerField()
+            )),
+        )
+
+        att_records = Attendance.objects.filter(
+            user=employee,
+            date__gte=start_date.date(),
+        )
+
+        attended = att_records.filter(status__in=['present', 'late']).count()
+        avg_attendance = round((attended / working_days) * 100) if working_days else 0
+
+        task_completion_chart = [{
+            'employee': emp_name,
+            'completed': task_stats['completed'],
+            'overdue': task_stats['overdue'],
+        }]
+
+        attendance_chart = [{
+            'employee': emp_name,
+            'attendance_rate': min(avg_attendance, 100),
+        }]
+
+        att_map = {r.date: r for r in att_records}
+
+        day_task_qs = (
+            Task.objects
+            .filter(assigned_to=employee, location=location, created_at__gte=start_date)
+            .values('created_at__date', 'status')
+            .annotate(total=Count('id'))
+        )
+
+        day_task_map = {}
+        for r in day_task_qs:
+            day_task_map.setdefault(r['created_at__date'], {})[r['status']] = r['total']
+
+        daily_breakdown = []
+
+        for i in range(days_in_period - 1, -1, -1):
+            day = (now - timedelta(days=i)).date()
+            record = att_map.get(day)
+            day_data = day_task_map.get(day, {})
+
+            completed = day_data.get('completed', 0) + day_data.get('approved', 0)
+            overdue = day_data.get('overdue', 0)
+
+            daily_breakdown.append({
+                'employee_id': employee.id,
+                'employee_name': emp_name,
+                'date': str(day),
+                'date_display': day.strftime('%a, %b %d'),
+                'status': record.status if record else 'no_record',
+                'completed_tasks': completed,
+                'overdue_tasks': overdue,
+            })
+
+        breakdown_paginator = PageNumberPagination()
+        breakdown_paginator.page_size = 10
+        breakdown_page = breakdown_paginator.paginate_queryset(daily_breakdown, request)
+        breakdown_paginated = breakdown_paginator.get_paginated_response(breakdown_page).data
+
+        task_log_qs = task_qs.select_related('created_by').order_by('-created_at', '-id')
+
+        paginator = PageNumberPagination()
+        paginator.page_size = 5
+        page = paginator.paginate_queryset(task_log_qs, request)
+
+        role_map = {
+            'branch_manager': 'Store Manager',
+            'district_manager': 'District Manager',
+            'super_admin': 'Super Admin',
+        }
+
+        task_log = [
+            {
+                'id': t.id,
+                'title': t.title,
+                'assigned_to': emp_name,
+                'assigned_by': role_map.get(t.created_by.role, 'Super Admin') if t.created_by else 'Super Admin',
+                'due_date': t.due_date,
+                'status': t.status,
+            }
+            for t in page
+        ]
+
+        task_log_paginated = paginator.get_paginated_response(task_log).data
+
+        return Response({
+            'view': 'detail',
+            'period': period,
+            'employee': {
+                'id': employee.id,
+                'name': emp_name,
+                'role': employee.get_role_display(),
+                'initials': f"{employee.first_name[:1]}{employee.last_name[:1]}".upper(),
+            },
+            'stats': {
+                'completed': task_stats['completed'],
+                'overdue': task_stats['overdue'],
+                'in_progress': task_stats['in_progress'],
+                'avg_attendance': min(avg_attendance, 100),
+            },
+            'task_completion_chart': task_completion_chart,
+            'attendance_chart': attendance_chart,
+            'employee_breakdown': breakdown_paginated['results'],
+            'employee_breakdown_meta': {
+                'count': breakdown_paginated['count'],
+                'next': breakdown_paginated['next'],
+                'previous': breakdown_paginated['previous'],
+            },
+            'task_log': task_log_paginated['results'],
+            'task_log_meta': {
+                'count': task_log_paginated['count'],
+                'next': task_log_paginated['next'],
+                'previous': task_log_paginated['previous'],
+            },
+        }, status=status.HTTP_200_OK)
+    
 class BranchManagerTaskViewSet(viewsets.ModelViewSet):
     permission_classes = [IsBranchManager]
     filter_backends    = [SearchFilter]
@@ -1961,14 +2439,14 @@ class BranchManagerTaskViewSet(viewsets.ModelViewSet):
 
         page = self.paginate_queryset(queryset)
         if page is not None:
-            serializer     = self.get_serializer(page, many=True)
+            serializer     = self.get_serializer(page, many=True, context={'request': request})
             paginated_data = self.get_paginated_response(serializer.data)
             return Response({
                 'location': manager.location.name if manager.location else None,
                 'tasks':    paginated_data.data,
             }, status=status.HTTP_200_OK)
 
-        serializer = self.get_serializer(queryset, many=True)
+        serializer     = self.get_serializer(page, many=True, context={'request': request})
         return Response({
             'location': manager.location.name if manager.location else None,
             'tasks':    serializer.data,
@@ -2231,12 +2709,7 @@ class UserAttendanceView(APIView):
         records = Attendance.objects.filter(user=employee, date__gte=start_date.date()).order_by('date')
 
         # FIX: single aggregate for stats
-        att_stats = records.aggregate(
-            present = Count(Case(When(status='present', then=1), output_field=IntegerField())),
-            late    = Count(Case(When(status='late',    then=1), output_field=IntegerField())),
-            absent  = Count(Case(When(status='absent',  then=1), output_field=IntegerField())),
-        )
-
+        att_stats = attendance_stats(records)
         total_weekdays = sum(1 for i in range(days_in_period) if (now - timedelta(days=i)).date().weekday() < 5)
         attendance_map = {r.date: r for r in records}
         daily_log      = []

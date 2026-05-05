@@ -2,7 +2,7 @@
 from django.db import models
 from django.conf import settings
 from django.utils import timezone
-from django.db.models import Count, Case, When, IntegerField,Q
+from django.db.models import Count, Case, When, IntegerField, Q
 from django.contrib.postgres.indexes import GinIndex
 
 # ================================================================
@@ -11,15 +11,14 @@ from django.contrib.postgres.indexes import GinIndex
 
 class Location(models.Model):
 
-    STATUS_CHOICES = (
-        ('active',   'Active'),
-        ('inactive', 'Inactive'),
-    )
+    class Status(models.TextChoices):
+        ACTIVE   = 'active',   'Active'
+        INACTIVE = 'inactive', 'Inactive'
 
     name           = models.CharField(max_length=255)
     street_address = models.CharField(max_length=255)
     city_state     = models.CharField(max_length=255, blank=True, null=True)
-    status         = models.CharField(max_length=10, choices=STATUS_CHOICES, default='active')
+    status         = models.CharField(max_length=10, choices=Status.choices, default=Status.ACTIVE)
     created_at     = models.DateTimeField(auto_now_add=True)
     updated_at     = models.DateTimeField(auto_now=True)
 
@@ -27,7 +26,6 @@ class Location(models.Model):
         db_table = 'locations'
         ordering = ['-created_at']
         indexes  = [
-            # ── WHY: filtered by status='active' in almost every view
             models.Index(fields=['status'], name='location_status_idx'),
         ]
 
@@ -36,8 +34,6 @@ class Location(models.Model):
 
     @property
     def staff_count(self):
-        # WHY: using filter instead of count() on related manager
-        # to avoid loading all objects into memory
         return self.users.filter(is_active=True).count()
 
 
@@ -47,15 +43,14 @@ class Location(models.Model):
 
 class UserWorkSchedule(models.Model):
 
-    DAY_CHOICES = (
-        ('mon', 'Monday'),
-        ('tue', 'Tuesday'),
-        ('wed', 'Wednesday'),
-        ('thu', 'Thursday'),
-        ('fri', 'Friday'),
-        ('sat', 'Saturday'),
-        ('sun', 'Sunday'),
-    )
+    class Day(models.TextChoices):
+        MON = 'mon', 'Monday'
+        TUE = 'tue', 'Tuesday'
+        WED = 'wed', 'Wednesday'
+        THU = 'thu', 'Thursday'
+        FRI = 'fri', 'Friday'
+        SAT = 'sat', 'Saturday'
+        SUN = 'sun', 'Sunday'
 
     DAY_ORDER = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']
 
@@ -64,19 +59,40 @@ class UserWorkSchedule(models.Model):
         on_delete=models.CASCADE,
         related_name='work_schedules'
     )
-    day        = models.CharField(max_length=3, choices=DAY_CHOICES)
+    day        = models.CharField(max_length=3, choices=Day.choices)
     is_active  = models.BooleanField(default=False)
     start_time = models.TimeField(null=True, blank=True)
     end_time   = models.TimeField(null=True, blank=True)
 
     class Meta:
-        db_table        = 'user_work_schedules'
-        unique_together = ('user', 'day')
-        ordering        = ['user']
-        indexes         = [
-            # ── WHY: always queried by user — prefetch_related uses this
-            models.Index(fields=['user'], name='schedule_user_idx'),
-            # ── WHY: composite — update_or_create uses (user, day) lookup
+        db_table = 'user_work_schedules'
+        ordering = ['user']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['user', 'day'],
+                name='unique_user_day_schedule'
+            ),
+            models.CheckConstraint(
+                condition=(
+                    Q(is_active=False) |
+                    (Q(start_time__isnull=False) & Q(end_time__isnull=False))
+                ),
+                name='schedule_active_requires_time'
+            ),
+            # ── WHY: prevents end_time before start_time (e.g. 18:00 → 09:00)
+            # which would produce negative shift durations and break
+            # any hours-worked calculations downstream.
+            models.CheckConstraint(
+                condition=(
+                    Q(start_time__isnull=True) |
+                    Q(end_time__isnull=True)   |
+                    Q(end_time__gt=models.F('start_time'))
+                ),
+                name='schedule_end_after_start'
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['user'],        name='schedule_user_idx'),
             models.Index(fields=['user', 'day'], name='schedule_user_day_idx'),
         ]
 
@@ -90,21 +106,19 @@ class UserWorkSchedule(models.Model):
 
 class Task(models.Model):
 
-    STATUS_CHOICES = (
-        ('pending',          'Pending'),
-        ('completed',        'Completed'),
-        ('awaiting_review',  'Awaiting Review'),
-        ('approved',         'Approved'),
-        ('rejected',         'Rejected'),
-        ('overdue',          'Overdue'),
-    )
+    class Status(models.TextChoices):
+        PENDING         = 'pending',         'Pending'
+        COMPLETED       = 'completed',       'Completed'
+        AWAITING_REVIEW = 'awaiting_review', 'Awaiting Review'
+        APPROVED        = 'approved',        'Approved'
+        REJECTED        = 'rejected',        'Rejected'
+        OVERDUE         = 'overdue',         'Overdue'
 
-    FREQUENCY_CHOICES = (
-        ('none',    'None'),
-        ('daily',   'Daily'),
-        ('weekly',  'Weekly'),
-        ('monthly', 'Monthly'),
-    )
+    class Frequency(models.TextChoices):
+        NONE    = 'none',    'None'
+        DAILY   = 'daily',   'Daily'
+        WEEKLY  = 'weekly',  'Weekly'
+        MONTHLY = 'monthly', 'Monthly'
 
     ASSIGNABLE_ROLES = ['tattoo_artist', 'body_piercer', 'staff']
 
@@ -127,10 +141,10 @@ class Task(models.Model):
         related_name='created_tasks'
     )
     due_date     = models.DateField()
-    status       = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    status       = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
     is_fired     = models.BooleanField(default=False)
     is_recurring = models.BooleanField(default=False)
-    frequency    = models.CharField(max_length=10, choices=FREQUENCY_CHOICES, default='none')
+    frequency    = models.CharField(max_length=10, choices=Frequency.choices, default=Frequency.NONE)
 
     requires_photo = models.BooleanField(default=False)
     photo_url      = models.URLField(blank=True, null=True)
@@ -141,8 +155,8 @@ class Task(models.Model):
         null=True, blank=True,
         related_name='completed_tasks'
     )
-    completed_at = models.DateTimeField(null=True, blank=True)
-    approved_by  = models.ForeignKey(
+    completed_at     = models.DateTimeField(null=True, blank=True)
+    approved_by      = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
         null=True, blank=True,
@@ -163,30 +177,33 @@ class Task(models.Model):
     class Meta:
         db_table = 'tasks'
         ordering = ['-created_at']
-        indexes  = [
-            # ── WHY: TaskViewSet filters by status constantly
-            models.Index(fields=['status'], name='task_status_idx'),
-
-            # ── WHY: filtered by location in branch manager views
-            models.Index(fields=['location'], name='task_location_idx'),
-
-            # ── WHY: filtered by assigned_to in employee task views
-            models.Index(fields=['assigned_to'], name='task_assigned_to_idx'),
-
-            # ── WHY: period filter uses created_at__date range
-            models.Index(fields=['created_at'], name='task_created_at_idx'),
-
-            # ── WHY: overdue detection compares due_date to today
-            models.Index(fields=['due_date'], name='task_due_date_idx'),
-
-            # ── WHY: most common combo — branch manager queries
-            # filter(location=x, status='pending') constantly
-            models.Index(fields=['location', 'status'], name='task_location_status_idx'),
-
-            # ── WHY: super admin filters tasks by status + period together
-            models.Index(fields=['status', 'created_at'], name='task_status_created_idx'),
-
-            # ── WHY: assigned_to + status used in employee dashboard
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    Q(status__in=['pending', 'rejected', 'overdue']) |
+                    (
+                        Q(completed_at__isnull=False) &
+                        Q(completed_by__isnull=False)
+                    )
+                ),
+                name='task_completion_requires_data'
+            ),
+            models.CheckConstraint(
+                condition=(
+                    ~Q(status='rejected') |
+                    Q(rejection_reason__isnull=False)
+                ),
+                name='task_rejection_requires_reason'
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['status'],                name='task_status_idx'),
+            models.Index(fields=['location'],              name='task_location_idx'),
+            models.Index(fields=['assigned_to'],           name='task_assigned_to_idx'),
+            models.Index(fields=['created_at'],            name='task_created_at_idx'),
+            models.Index(fields=['due_date'],              name='task_due_date_idx'),
+            models.Index(fields=['location', 'status'],    name='task_location_status_idx'),
+            models.Index(fields=['status', 'created_at'],  name='task_status_created_idx'),
             models.Index(fields=['assigned_to', 'status'], name='task_assigned_status_idx'),
         ]
 
@@ -199,12 +216,6 @@ class Task(models.Model):
 # ================================================================
 
 class Instruction(models.Model):
-
-    ROLE_CHOICES = (
-        ('tattoo_artist', 'Tattoo Artist'),
-        ('body_piercer',  'Body Piercer'),
-        ('staff',         'Staff'),
-    )
 
     title           = models.CharField(max_length=255)
     description     = models.TextField(blank=True, null=True)
@@ -272,18 +283,17 @@ class FAQ(models.Model):
 
 class ActivityLog(models.Model):
 
-    ACTION_CHOICES = (
-        ('task_completed',  'Task Completed'),
-        ('task_assigned',   'Task Assigned'),
-        ('task_approved',   'Task Approved'),
-        ('task_rejected',   'Task Rejected'),
-        ('task_overdue',    'Task Overdue'),
-        ('user_added',      'User Added'),
-        ('user_suspended',  'User Suspended'),
-        ('user_activated',  'User Activated'),
-    )
+    class Action(models.TextChoices):
+        TASK_COMPLETED = 'task_completed', 'Task Completed'
+        TASK_ASSIGNED  = 'task_assigned',  'Task Assigned'
+        TASK_APPROVED  = 'task_approved',  'Task Approved'
+        TASK_REJECTED  = 'task_rejected',  'Task Rejected'
+        TASK_OVERDUE   = 'task_overdue',   'Task Overdue'
+        USER_ADDED     = 'user_added',     'User Added'
+        USER_SUSPENDED = 'user_suspended', 'User Suspended'
+        USER_ACTIVATED = 'user_activated', 'User Activated'
 
-    action      = models.CharField(max_length=30, choices=ACTION_CHOICES)
+    action      = models.CharField(max_length=30, choices=Action.choices)
     actor       = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -309,11 +319,10 @@ class ActivityLog(models.Model):
         db_table = 'activity_logs'
         ordering = ['-created_at']
         indexes  = [
-            models.Index(fields=['created_at'], name='actlog_created_at_idx'),
-            models.Index(fields=['action'],     name='actlog_action_idx'),
-            # ── ADD THESE TWO ──
-            models.Index(fields=['actor'],      name='actlog_actor_idx'),
-            models.Index(fields=['target_user'],name='actlog_target_user_idx'),
+            models.Index(fields=['created_at'],  name='actlog_created_at_idx'),
+            models.Index(fields=['action'],       name='actlog_action_idx'),
+            models.Index(fields=['actor'],        name='actlog_actor_idx'),
+            models.Index(fields=['target_user'],  name='actlog_target_user_idx'),
         ]
 
     def __str__(self):
@@ -354,15 +363,17 @@ class QRSession(models.Model):
     class Meta:
         db_table = 'qr_sessions'
         ordering = ['-created_at']
+        # ── WHY no CheckConstraint for expiry:
+        # timezone.now() is evaluated at migration time, not runtime.
+        # So a DB-level check would be a fixed timestamp — useless.
+        # Expiry validation belongs in the serializer/view layer,
+        # which is where it already lives (is_expired property +
+        # bulk update in SuperAdminQRView).
         indexes  = [
-            # ── WHY: QR lookup always checks is_active + location
-            models.Index(fields=['is_active'], name='qr_is_active_idx'),
-            models.Index(fields=['location', 'is_active'], name='qr_location_active_idx'),
-            # ── WHY: token is used for QR scan lookup — unique already
-            # creates index but explicit for clarity
-            models.Index(fields=['token'], name='qr_token_idx'),
-            # ── WHY: expiry check on every QR scan
-            models.Index(fields=['expires_at'], name='qr_expires_at_idx'),
+            models.Index(fields=['is_active'],             name='qr_is_active_idx'),
+            models.Index(fields=['location', 'is_active'],  name='qr_location_active_idx'),
+            models.Index(fields=['token'],                  name='qr_token_idx'),
+            models.Index(fields=['expires_at'],             name='qr_expires_at_idx'),
         ]
 
     def __str__(self):
@@ -372,26 +383,28 @@ class QRSession(models.Model):
     def is_expired(self):
         return timezone.now() > self.expires_at
 
+
 # ================================================================
 # ATTENDANCE
 # ================================================================
+
 class AttendanceQuerySet(models.QuerySet):
 
     def stats(self):
         return self.aggregate(
-            present=Count(Case(When(status='present', then=1), output_field=IntegerField())),
-            late=Count(Case(When(status='late', then=1), output_field=IntegerField())),
-            absent=Count(Case(When(status='absent', then=1), output_field=IntegerField())),
+            present = Count(Case(When(status='present', then=1), output_field=IntegerField())),
+            late    = Count(Case(When(status='late',    then=1), output_field=IntegerField())),
+            absent  = Count(Case(When(status='absent',  then=1), output_field=IntegerField())),
         )
+
 
 class Attendance(models.Model):
     objects = AttendanceQuerySet.as_manager()
 
-    STATUS_CHOICES = (
-        ('present', 'Present'),
-        ('late',    'Late'),
-        ('absent',  'Absent'),
-    )
+    class Status(models.TextChoices):
+        PRESENT = 'present', 'Present'
+        LATE    = 'late',    'Late'
+        ABSENT  = 'absent',  'Absent'
 
     user       = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -410,34 +423,46 @@ class Attendance(models.Model):
         related_name='attendances'
     )
     date       = models.DateField()
-    status     = models.CharField(max_length=10, choices=STATUS_CHOICES)
+    status     = models.CharField(max_length=10, choices=Status.choices)
     clock_in   = models.TimeField(null=True, blank=True)
     clock_out  = models.TimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        db_table        = 'attendances'
-        unique_together = ('user', 'date')
-        ordering        = ['-date']
-        indexes         = [
-            # ── WHY: most queried field — filter(date=today) everywhere
-            models.Index(fields=['date'], name='attendance_date_idx'),
-
-            # ── WHY: filter by status in reports and dashboard
-            models.Index(fields=['status'], name='attendance_status_idx'),
-
-            # ── WHY: filter by location in branch manager views
-            models.Index(fields=['location'], name='attendance_location_idx'),
-
-            # ── WHY: most common combo — dashboard queries filter(user, date)
-            models.Index(fields=['user', 'date'], name='attendance_user_date_idx'),
-
-            # ── WHY: reports filter by location + date range constantly
+        db_table = 'attendances'
+        ordering = ['-date']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['user', 'date'],
+                name='unique_user_date_attendance'
+            ),
+            models.CheckConstraint(
+                condition=(
+                    Q(status='absent') |
+                    Q(clock_in__isnull=False)
+                ),
+                name='attendance_present_requires_clockin'
+            ),
+            # ── WHY: clock_out must be after clock_in.
+            # Without this, a data entry error like clock_out=08:00
+            # clock_in=17:00 produces negative shift duration and
+            # breaks any hours-worked calculations.
+            models.CheckConstraint(
+                condition=(
+                    Q(clock_out__isnull=True) |
+                    Q(clock_out__gt=models.F('clock_in'))
+                ),
+                name='attendance_clock_out_after_clock_in'
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['date'],             name='attendance_date_idx'),
+            models.Index(fields=['status'],           name='attendance_status_idx'),
+            models.Index(fields=['location'],         name='attendance_location_idx'),
+            models.Index(fields=['user', 'date'],     name='attendance_user_date_idx'),
             models.Index(fields=['location', 'date'], name='attendance_location_date_idx'),
-
-            # ── WHY: status + date used in attendance trend charts
-            models.Index(fields=['status', 'date'], name='attendance_status_date_idx'),
+            models.Index(fields=['status', 'date'],   name='attendance_status_date_idx'),
         ]
 
     def __str__(self):
@@ -450,10 +475,9 @@ class Attendance(models.Model):
 
 class Notification(models.Model):
 
-    STATUS_CHOICES = (
-        ('sent',   'Sent'),
-        ('failed', 'Failed'),
-    )
+    class Status(models.TextChoices):
+        SENT   = 'sent',   'Sent'
+        FAILED = 'failed', 'Failed'
 
     sent_by   = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -467,7 +491,7 @@ class Notification(models.Model):
         null=True, blank=True,
         related_name='received_notifications'
     )
-    email    = models.EmailField()
+    email    = models.EmailField(blank=True, null=True)
     location = models.ForeignKey(
         'Location',
         on_delete=models.SET_NULL,
@@ -475,16 +499,26 @@ class Notification(models.Model):
         related_name='notifications'
     )
     message    = models.TextField()
-    status     = models.CharField(max_length=10, choices=STATUS_CHOICES, default='sent')
+    status     = models.CharField(max_length=10, choices=Status.choices, default=Status.SENT)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         db_table = 'notifications'
         ordering = ['-created_at']
-        indexes  = [
-            # ── WHY: stats query filters by status='sent'
-            models.Index(fields=['status'], name='notif_status_idx'),
-            # ── WHY: list ordered by created_at
+        constraints = [
+            # ── WHY: a notification with no recipient FK and no email
+            # address is a dead record — it can never be delivered and
+            # just pollutes the notifications table.
+            models.CheckConstraint(
+                condition=(
+                    Q(recipient__isnull=False) |
+                    (Q(email__isnull=False) & ~Q(email=''))
+                ),
+                name='notification_requires_target'
+),
+        ]
+        indexes = [
+            models.Index(fields=['status'],     name='notif_status_idx'),
             models.Index(fields=['created_at'], name='notif_created_at_idx'),
         ]
 

@@ -1,7 +1,7 @@
 # apps/users/models.py
 from django.contrib.auth.models import AbstractUser
 from django.db import models
-import random
+import secrets
 from datetime import timedelta
 from django.utils import timezone
 
@@ -86,7 +86,7 @@ class User(AbstractUser):
     # ================================================================
 
     def set_login_otp(self):
-        self.login_otp        = str(random.randint(10000, 99999))
+        self.login_otp        = str(secrets.randbelow(90000) + 10000)  # ← cryptographically secure
         self.login_otp_expiry = timezone.now() + timedelta(minutes=10)
         self.save(update_fields=['login_otp', 'login_otp_expiry'])
         return self.login_otp
@@ -112,7 +112,7 @@ class User(AbstractUser):
     # ================================================================
 
     def set_reset_otp(self):
-        self.reset_otp        = str(random.randint(10000, 99999))
+        self.reset_otp        = str(secrets.randbelow(90000) + 10000)  # ← cryptographically secure
         self.reset_otp_expiry = timezone.now() + timedelta(minutes=10)
         self.save(update_fields=['reset_otp', 'reset_otp_expiry'])
         return self.reset_otp

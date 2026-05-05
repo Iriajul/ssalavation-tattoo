@@ -1,6 +1,7 @@
 # apps/admin_api/urls.py
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
+from .district_views import DistrictManagerDashboardView, DistrictManagerLocationsView, DistrictManagerReportsView, DistrictManagerTaskView, DistrictManagerTaskDetailView, DistrictManagerLocationEmployeesView, DistrictManagerVerificationActionView, DistrictManagerVerificationView,DistrictManagerProfileView, DistrictManagerChangePasswordView
 from .views import (
     AdminChangePasswordView,
     AdminLoginView,
@@ -33,7 +34,10 @@ from .views import (
     SuperAdminQRIntervalListView,
     ClockInUserQRView,
     BranchManagerLocationEmployeesView,
-    NotificationViewSet
+    NotificationViewSet,
+    BranchManagerReportsView,
+    BranchManagerChangePasswordView,
+
 )
 
 router = DefaultRouter()
@@ -59,10 +63,12 @@ urlpatterns = [
     # ── Branch Manager — QR Attendance ────────────────────────────
     path('branch-manager/dashboard/', BranchManagerDashboardView.as_view(), name='branch-manager-dashboard'),
     path('branch-manager/profile/', BranchManagerProfileView.as_view(), name='branch-manager-profile'),
+    path('branch-manager/reports/', BranchManagerReportsView.as_view(), name='branch-manager-reports'),
+    path('branch-manager/profile/password/', BranchManagerChangePasswordView.as_view(), name='branch-manager-change-password'),
     #── Super Admin QR ────────────────────────────────────────────
-    path('qr/',                    SuperAdminQRView.as_view(),          name='super-admin-qr'),
-    path('qr/<int:pk>/details/',   SuperAdminQRDetailView.as_view(),    name='super-admin-qr-details'),
-    path('qr/intervals/',          SuperAdminQRIntervalListView.as_view(), name='qr-intervals'),
+    path('qr/intervals/',          SuperAdminQRIntervalListView.as_view(), name='qr-intervals'),   
+    path('qr/<int:pk>/details/',   SuperAdminQRDetailView.as_view(),       name='super-admin-qr-details'),
+    path('qr/',                    SuperAdminQRView.as_view(),              name='super-admin-qr'),
 
     # ── Clock In User QR ──────────────────────────────────────────
     path('clock-in/qr/',           ClockInUserQRView.as_view(),         name='clock-in-user-qr'),
@@ -78,5 +84,15 @@ urlpatterns = [
     # ── Employees by location ─────────────────────────────────────
     path('locations/<int:pk>/employees/', LocationEmployeesView.as_view(), name='location-employees'),
     path('app-content/splash-screen/', SplashScreenView.as_view(), name='splash-screen'),
+    path('district-manager/dashboard/', DistrictManagerDashboardView.as_view(), name='district-manager-dashboard'),
+    path('district-manager/tasks/',                            DistrictManagerTaskView.as_view(),              name='district-manager-tasks'),
+    path('district-manager/tasks/<int:pk>/',                   DistrictManagerTaskDetailView.as_view(),        name='district-manager-task-detail'),
+    path('district-manager/locations/<int:pk>/employees/',     DistrictManagerLocationEmployeesView.as_view(), name='district-manager-location-employees'),
+    path('district-manager/verifications/',DistrictManagerVerificationView.as_view(),name='district-manager-verifications'),
+    path('district-manager/verifications/<int:pk>/<str:action>/',DistrictManagerVerificationActionView.as_view(),name='district-manager-verification-action'),
+    path('district/reports/', DistrictManagerReportsView.as_view(), name='district-reports'),
+    path('district-manager/profile/',          DistrictManagerProfileView.as_view(),         name='district-manager-profile'),
+    path('district-manager/profile/password/', DistrictManagerChangePasswordView.as_view(),  name='district-manager-change-password'),
+    path('district-manager/locations/', DistrictManagerLocationsView.as_view(), name='district-manager-locations'),
 
 ] + router.urls

@@ -60,4 +60,12 @@ class IsClockInUser(BasePermission):
             and request.user.role == 'clock_in_user'
         )
 
+class IsDistrictManager(BasePermission):
+    message = "Access denied. District Manager only."
 
+    def has_permission(self, request, view):
+        return (
+            request.user
+            and request.user.is_authenticated
+            and request.user.role == 'district_manager'
+        )

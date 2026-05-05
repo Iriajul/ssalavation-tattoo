@@ -11,7 +11,6 @@ User = get_user_model()
 # Roles that require a weekly schedule
 SCHEDULE_ROLES = ['tattoo_artist', 'body_piercer', 'staff']
 ASSIGNABLE_ROLES = ['tattoo_artist', 'body_piercer', 'staff']
-VISIBILITY_ROLES = ['tattoo_artist', 'body_piercer', 'staff', 'district_manager', 'branch_manager']
 
 # ================================================================
 # AUTH SERIALIZERS
@@ -115,12 +114,16 @@ class WorkScheduleSerializer(serializers.ModelSerializer):
         fields = ['id', 'day', 'is_active', 'start_time', 'end_time']
 
     def validate(self, data):
-        if data.get('is_active'):
-            if not data.get('start_time'):
+        is_active  = data.get('is_active', self.instance.is_active if self.instance else False)
+        start_time = data.get('start_time', self.instance.start_time if self.instance else None)
+        end_time   = data.get('end_time',   self.instance.end_time   if self.instance else None)
+
+        if is_active:
+            if not start_time:
                 raise serializers.ValidationError({"start_time": "Start time is required when day is active."})
-            if not data.get('end_time'):
+            if not end_time:
                 raise serializers.ValidationError({"end_time": "End time is required when day is active."})
-            if data['start_time'] >= data['end_time']:
+            if start_time >= end_time:
                 raise serializers.ValidationError({"end_time": "End time must be after start time."})
         return data
 
@@ -215,7 +218,8 @@ class UserCreateSerializer(serializers.ModelSerializer):
             })
 
         # Location required for everyone except super_admin
-        if role != 'super_admin' and not data.get('location'):
+        roles_without_location = ['super_admin', 'district_manager']
+        if role not in roles_without_location and not data.get('location'):
             raise serializers.ValidationError({
                 "location": "Location assignment is required."
             })
@@ -494,7 +498,7 @@ class TaskUpdateSerializer(serializers.ModelSerializer):
             'is_recurring', 'frequency',
             'requires_photo',
         ]
-    
+
     def validate_due_date(self, value):
         today = timezone.localdate()
         if value < today:
@@ -511,7 +515,28 @@ class TaskUpdateSerializer(serializers.ModelSerializer):
         if not value.is_active:
             raise serializers.ValidationError("Cannot assign task to an inactive user.")
         return value
- 
+
+    def validate(self, data):
+        assigned_to = data.get('assigned_to', getattr(self.instance, 'assigned_to', None))
+        location    = data.get('location',    getattr(self.instance, 'location', None))
+
+        if assigned_to and location:
+            if assigned_to.location != location:
+                raise serializers.ValidationError({
+                    "assigned_to": "This user does not belong to the selected location."
+                })
+
+        is_recurring = data.get('is_recurring', getattr(self.instance, 'is_recurring', False))
+        frequency    = data.get('frequency',    getattr(self.instance, 'frequency', 'none'))
+
+        if is_recurring and frequency == 'none':
+            raise serializers.ValidationError({
+                "frequency": "Please select a frequency for the recurring task."
+            })
+        if not is_recurring:
+            data['frequency'] = 'none'
+
+        return data
  
 class TaskApproveSerializer(serializers.Serializer):
     pass
@@ -834,8 +859,10 @@ class BranchManagerTaskListSerializer(serializers.ModelSerializer):
         return f"{obj.assigned_to.first_name} {obj.assigned_to.last_name}".strip()
 
     def get_can_edit(self, obj):
-        return obj.status == 'pending'
-    
+        request = self.context.get('request')
+        if request and request.user:
+            return obj.status == 'pending' and obj.created_by_id == request.user.id
+        return False
 
 class NotificationStatsSerializer(serializers.Serializer):
     total_sent       = serializers.IntegerField()

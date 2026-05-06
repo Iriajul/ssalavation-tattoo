@@ -916,18 +916,32 @@ class AdminProfileView(APIView):
         return Response(AdminProfileSerializer(request.user).data)
 
     def patch(self, request):
+        user = request.user
+
+        # Update name fields if provided
+        updated_fields = []
+        if 'first_name' in request.data:
+            user.first_name = request.data['first_name']
+            updated_fields.append('first_name')
+        if 'last_name' in request.data:
+            user.last_name = request.data['last_name']
+            updated_fields.append('last_name')
+
+        # Update profile photo if provided (optional)
         photo = request.FILES.get('profile_photo')
         if photo:
             import cloudinary.uploader
             result = cloudinary.uploader.upload(photo, folder="profile_photos")
-            request.user.profile_photo = result['secure_url']
-            request.user.save(update_fields=['profile_photo'])
-            return Response({
-                "message":       "Profile photo updated.",
-                "profile_photo": request.user.profile_photo,
-            })
-        return Response({"error": "No photo provided."}, status=400)
+            user.profile_photo = result['secure_url']
+            updated_fields.append('profile_photo')
 
+        if updated_fields:
+            user.save(update_fields=updated_fields)
+
+        return Response({
+            'message':  'Profile updated successfully.',
+            'profile':  AdminProfileSerializer(user).data,
+        })
 
 class AdminChangePasswordView(APIView):
     permission_classes = [IsSuperAdmin]

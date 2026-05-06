@@ -1,7 +1,7 @@
 # apps/admin_api/urls.py
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from .district_views import DistrictManagerDashboardView, DistrictManagerLocationsView, DistrictManagerReportsView, DistrictManagerTaskView, DistrictManagerTaskDetailView, DistrictManagerLocationEmployeesView, DistrictManagerVerificationActionView, DistrictManagerVerificationView,DistrictManagerProfileView, DistrictManagerChangePasswordView,DistrictManagerEmployeePerformanceView,DistrictManagerPerformanceDashboardView
+from .district_views import DistrictManagerDashboardView, DistrictManagerLocationsView, DistrictManagerReportsView, DistrictManagerTaskView, DistrictManagerTaskDetailView, DistrictManagerLocationEmployeesView, DistrictManagerUserAttendanceListView, DistrictManagerVerificationActionView, DistrictManagerVerificationView,DistrictManagerProfileView, DistrictManagerChangePasswordView,DistrictManagerEmployeePerformanceView,DistrictManagerEmployeeAttendanceDetailView, DistrictManagerPerformanceDashboardView
 from .views import (
     AdminChangePasswordView,
     AdminLoginView,
@@ -96,6 +96,9 @@ urlpatterns = [
     path('district-manager/locations/', DistrictManagerLocationsView.as_view(), name='district-manager-locations'),
     path('district-manager/reports/employee-performance/',DistrictManagerEmployeePerformanceView.as_view(),name='district-manager-employee-performance'),
     path('district-manager/performance/', DistrictManagerPerformanceDashboardView.as_view(), name='district-manager-performance'),
+    path('district-manager/attendance/<int:employee_id>/',DistrictManagerEmployeeAttendanceDetailView.as_view(),name='district-manager-employee-attendance'),
+    path('district-manager/users-attendance/',DistrictManagerUserAttendanceListView.as_view(),name='district-manager-users-attendance'
+),
     
 
 ] + router.urls

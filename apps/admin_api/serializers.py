@@ -692,14 +692,18 @@ class FAQSerializer(serializers.ModelSerializer):
 class AdminProfileSerializer(serializers.ModelSerializer):
     role_display = serializers.CharField(source='get_role_display', read_only=True)
     member_since = serializers.DateTimeField(source='date_joined', format='%B %d, %Y', read_only=True)
+    full_name     = serializers.SerializerMethodField()
 
     class Meta:
         model  = User
         fields = [
-            'id', 'first_name','last_name', 'email',
+            'id', 'first_name','last_name', 'email', 'full_name',
             'role', 'role_display', 'is_active',
             'profile_photo', 'member_since', 'last_login_at',
         ]
+        
+    def get_full_name(self, obj):
+        return f"{obj.first_name} {obj.last_name}".strip()
 
 class AdminChangePasswordSerializer(serializers.Serializer):
     current_password = serializers.CharField(required=True)

@@ -6,8 +6,8 @@ from rest_framework.pagination import PageNumberPagination
 from django.contrib.auth import get_user_model
 from django.db.models import Count, Case, When, IntegerField, Q
 from django.utils import timezone
-from datetime import datetime, time, timedelta
-from .models import Location, Task, Attendance
+from datetime import datetime, time, timedelta, date
+from .models import Location, Task, Attendance, UserWorkSchedule
 from .permissions import IsDistrictManager         
 from .serializers import (
     TaskDetailSerializer,
@@ -666,121 +666,145 @@ class DistrictManagerReportsView(APIView):
             start_date     = now - timedelta(days=7)
             days_in_period = 7
 
-        # ── Working days (exclude weekends) ───────────────────────
         working_days = max(sum(
             1 for i in range(days_in_period)
             if (now - timedelta(days=i)).date().weekday() < 5
         ), 1)
 
-        # ── Get all locations under this district manager ─────────
-        # District manager sees ALL active locations
-        locations = Location.objects.filter(status='active')
+        # ── Locations — single query ──────────────────────────────
+        locations    = Location.objects.filter(status='active')
         location_ids = list(locations.values_list('id', flat=True))
 
-        # ── All employees across locations ────────────────────────
-        employees = User.objects.filter(
-            location_id__in = location_ids,
-            role__in        = EMPLOYEE_ROLES,
-            is_active       = True,
-        )
-        emp_ids   = list(employees.values_list('id', flat=True))
-        total_emp = len(emp_ids)
+        if not location_ids:
+            return Response({
+                'period': period,
+                'stats': {
+                    'task_completion_rate': 0,
+                    'avg_attendance_rate':  0,
+                    'overdue_tasks':        0,
+                    'late_arrivals':        0,
+                },
+                'location_chart':   [],
+                'location_summary': [],
+            }, status=status.HTTP_200_OK)
 
-        # ── All tasks in period ───────────────────────────────────
-        tasks = Task.objects.filter(
-            location_id__in = location_ids,
-            created_at__gte = start_date,
+        # ── Bulk employee count per location — single query ───────
+        emp_rows = (
+            User.objects
+            .filter(location_id__in=location_ids, role__in=EMPLOYEE_ROLES, is_active=True)
+            .values('location_id')
+            .annotate(count=Count('id'))
         )
+        emp_map = {row['location_id']: row['count'] for row in emp_rows}
 
-        total_tasks     = tasks.count()
-        completed_tasks = tasks.filter(status__in=['completed', 'approved']).count()
-        overdue_tasks   = tasks.filter(status='overdue').count()
+        # All emp ids in one shot
+        all_emp_ids = list(
+            User.objects
+            .filter(location_id__in=location_ids, role__in=EMPLOYEE_ROLES, is_active=True)
+            .values_list('id', flat=True)
+        )
+        total_emp = len(all_emp_ids)
+
+        # ── Bulk task stats per location — single query ───────────
+        # Period tasks (for charts)
+        period_task_rows = (
+            Task.objects
+            .filter(location_id__in=location_ids, created_at__gte=start_date)
+            .values('location_id')
+            .annotate(
+                total     = Count('id'),
+                completed = Count(Case(When(status__in=['completed', 'approved'], then=1), output_field=IntegerField())),
+                overdue   = Count(Case(When(status='overdue', then=1), output_field=IntegerField())),
+            )
+        )
+        period_task_map = {row['location_id']: row for row in period_task_rows}
+
+        # All-time tasks (for summary table)
+        alltime_task_rows = (
+            Task.objects
+            .filter(location_id__in=location_ids)
+            .values('location_id')
+            .annotate(
+                total     = Count('id'),
+                completed = Count(Case(When(status__in=['completed', 'approved'], then=1), output_field=IntegerField())),
+                overdue   = Count(Case(When(status='overdue', then=1), output_field=IntegerField())),
+            )
+        )
+        alltime_task_map = {row['location_id']: row for row in alltime_task_rows}
+
+        # Global task stats
+        total_tasks     = sum(r['total']     for r in period_task_map.values())
+        completed_tasks = sum(r['completed'] for r in period_task_map.values())
+        overdue_tasks   = sum(r['overdue']   for r in period_task_map.values())
         completion_rate = round((completed_tasks / total_tasks * 100)) if total_tasks > 0 else 0
 
-        # ── Attendance stats ──────────────────────────────────────
-        attendance_records = Attendance.objects.filter(
-            user_id__in = emp_ids,
-            date__gte   = start_date.date(),
+        # ── Bulk attendance per location — single query ───────────
+        att_rows = (
+            Attendance.objects
+            .filter(user_id__in=all_emp_ids, date__gte=start_date.date())
+            .values('location_id')
+            .annotate(
+                present = Count(Case(When(status='present', then=1), output_field=IntegerField())),
+                late    = Count(Case(When(status='late',    then=1), output_field=IntegerField())),
+                absent  = Count(Case(When(status='absent',  then=1), output_field=IntegerField())),
+            )
         )
-        total_present  = attendance_records.filter(status__in=['present', 'late']).count()
-        late_arrivals  = attendance_records.filter(status='late').count()
+        att_map = {row['location_id']: row for row in att_rows}
+
+        # Global attendance stats
+        total_present = sum(r['present'] + r['late'] for r in att_map.values())
+        late_arrivals = sum(r['late']                for r in att_map.values())
         expected_total = total_emp * working_days
         avg_attendance = round((total_present / expected_total * 100)) if expected_total > 0 else 0
 
-        # ── Completion vs Attendance by Location chart ─────────────
-        location_chart = []
+        # ── Location chart & summary — no queries inside loop ─────
+        location_chart   = []
+        location_summary = []
+
         for loc in locations:
-            loc_emp_ids = list(User.objects.filter(
-                location  = loc,
-                role__in  = EMPLOYEE_ROLES,
-                is_active = True,
-            ).values_list('id', flat=True))
-            loc_emp_count = len(loc_emp_ids)
+            emp_count = emp_map.get(loc.id, 0)
 
-            loc_tasks     = tasks.filter(location=loc)
-            loc_total     = loc_tasks.count()
-            loc_completed = loc_tasks.filter(status__in=['completed', 'approved']).count()
-            loc_completion = round((loc_completed / loc_total * 100)) if loc_total > 0 else 0
+            # ── Chart (period tasks) ──────────────────────────────
+            pt        = period_task_map.get(loc.id, {})
+            pt_total  = pt.get('total',     0)
+            pt_done   = pt.get('completed', 0)
+            task_rate = round((pt_done / pt_total * 100)) if pt_total > 0 else 0
 
-            loc_attended  = Attendance.objects.filter(
-                user_id__in = loc_emp_ids,
-                date__gte   = start_date.date(),
-                status__in  = ['present', 'late'],
-            ).count()
-            loc_expected   = loc_emp_count * working_days
-            loc_attendance = round((loc_attended / loc_expected * 100)) if loc_expected > 0 else 0
+            a         = att_map.get(loc.id, {})
+            attended  = a.get('present', 0) + a.get('late', 0)
+            att_total = attended + a.get('absent', 0)
+            att_rate  = round((attended / att_total * 100)) if att_total > 0 else 0
 
             location_chart.append({
-                'location':        loc.name,
-                'location_id':     loc.id,
-                'completion':      loc_completion,
-                'attendance':      loc_attendance,
+                'location_id':   loc.id,
+                'location':      loc.name,
+                'completion':    task_rate,
+                'attendance':    att_rate,
             })
 
-        # ── Location Summary table ────────────────────────────────
-        location_summary = []
-        for loc in locations:
-            loc_emp_ids = list(User.objects.filter(
-                location  = loc,
-                role__in  = EMPLOYEE_ROLES,
-                is_active = True,
-            ).values_list('id', flat=True))
-            loc_emp_count = len(loc_emp_ids)
+            # ── Summary (all-time tasks) ──────────────────────────
+            at        = alltime_task_map.get(loc.id, {})
+            at_total  = at.get('total',     0)
+            at_done   = at.get('completed', 0)
+            at_overdue = at.get('overdue',  0)
+            at_rate   = round((at_done / at_total * 100)) if at_total > 0 else 0
 
-            # Tasks done = completed/approved out of total ever assigned
-            loc_all_tasks  = Task.objects.filter(location=loc)
-            loc_total_ever = loc_all_tasks.count()
-            loc_done       = loc_all_tasks.filter(status__in=['completed', 'approved']).count()
-            loc_overdue    = loc_all_tasks.filter(status='overdue').count()
-            loc_completion = round((loc_done / loc_total_ever * 100)) if loc_total_ever > 0 else 0
-
-            loc_attended   = Attendance.objects.filter(
-                user_id__in = loc_emp_ids,
-                date__gte   = start_date.date(),
-                status__in  = ['present', 'late'],
-            ).count()
-            loc_expected   = loc_emp_count * working_days
-            loc_attendance = round((loc_attended / loc_expected * 100)) if loc_expected > 0 else 0
+            loc_expected  = emp_count * working_days
+            loc_att_rate  = round((attended / loc_expected * 100)) if loc_expected > 0 else 0
 
             location_summary.append({
                 'location_id':     loc.id,
                 'location_name':   loc.name,
-                'staff_count':     loc_emp_count,
-                'tasks_done':      loc_done,
-                'tasks_total':     loc_total_ever,
-                'tasks_display':   f"{loc_done}/{loc_total_ever}",
-                'completion_rate': loc_completion,
-                'attendance_rate': loc_attendance,
-                'overdue_count':   loc_overdue,
+                'staff_count':     emp_count,
+                'tasks_done':      at_done,
+                'tasks_total':     at_total,
+                'tasks_display':   f"{at_done}/{at_total}",
+                'completion_rate': at_rate,
+                'attendance_rate': loc_att_rate,
+                'overdue_count':   at_overdue,
             })
 
-        # Sort by completion rate descending
         location_summary.sort(key=lambda x: x['completion_rate'], reverse=True)
-
-        # ── Filter options ────────────────────────────────────────
-        all_locations = Location.objects.filter(
-            status='active'
-        ).values('id', 'name')
 
         return Response({
             'period': period,
@@ -793,7 +817,6 @@ class DistrictManagerReportsView(APIView):
             'location_chart':   location_chart,
             'location_summary': location_summary,
         }, status=status.HTTP_200_OK)
-
 
 
 class DistrictManagerLocationsView(APIView):
@@ -1036,225 +1059,20 @@ class DistrictManagerPerformanceDashboardView(APIView):
     permission_classes = [IsDistrictManager]
 
     def get(self, request):
-        period          = request.query_params.get('period', 'today')
-        location_filter = request.query_params.get('location')
-        search          = request.query_params.get('search', '').strip()  # name search
-        now             = timezone.now()
-        today           = now.date()
-
-        # ── Period range ──────────────────────────────────────────
-        if period == 'weekly':
-            start_date = today - timedelta(days=7)
-        elif period == 'monthly':
-            start_date = today - timedelta(days=30)
-        elif period == 'yearly':
-            start_date = today - timedelta(days=365)
-        else:  # today (default)
-            start_date = today
-
-        start_datetime = timezone.make_aware(
-            datetime.combine(start_date, time.min)
+        # ── Locations ─────────────────────────────────────────────
+        location_ids = list(
+            get_active_locations().values_list('id', flat=True)
         )
-
-        # ── All active locations — one DB hit ─────────────────────
-        all_locations = get_active_locations()
-        location_list = list(all_locations.values('id', 'name'))
-        location_ids  = [loc['id'] for loc in location_list]
 
         if not location_ids:
-            return Response({
-                'period':                        period,
-                'location_cards':                [],
-                'location_comparison':           [],
-                'location_performance_overview': {},
-                'employee_breakdown':            [],
-                'task_log':                      [],
-                'filter_options':                {'locations': []},
-            }, status=status.HTTP_200_OK)
+            return Response({'task_log': []}, status=status.HTTP_200_OK)
 
-        # ── Validate location filter ──────────────────────────────
-        if location_filter:
-            try:
-                location_filter = int(location_filter)
-                if location_filter not in location_ids:
-                    return Response({'error': 'Invalid location.'}, status=status.HTTP_400_BAD_REQUEST)
-            except (ValueError, TypeError):
-                return Response({'error': 'location must be a valid integer.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        # ── Scoped location ids ───────────────────────────────────
-        scoped_loc_ids = [location_filter] if location_filter else location_ids
-
-        # ── All employees in scope ────────────────────────────────
-        emp_qs = User.objects.filter(
-            role__in        = EMPLOYEE_ROLES,
-            is_active       = True,
-            location_id__in = scoped_loc_ids,
-        ).select_related('location')
-
-        emp_ids = list(emp_qs.values_list('id', flat=True))
-
-        # ── Bulk task stats per location ──────────────────────────
-        task_loc_rows = Task.objects.filter(
-            location_id__in = scoped_loc_ids,
-            created_at__gte = start_datetime,
-        ).values('location_id').annotate(
-            total     = Count('id'),
-            completed = Count(Case(When(status__in=['completed', 'approved'], then=1), output_field=IntegerField())),
-            overdue   = Count(Case(When(status='overdue', then=1), output_field=IntegerField())),
-            pending   = Count(Case(When(status='pending',  then=1), output_field=IntegerField())),
-        )
-        task_loc_map = {row['location_id']: row for row in task_loc_rows}
-
-        # ── Bulk attendance stats per location ────────────────────
-        att_loc_rows = Attendance.objects.filter(
-            user_id__in = emp_ids,
-            date__gte   = start_date,
-        ).values('location_id').annotate(
-            present = Count(Case(When(status='present', then=1), output_field=IntegerField())),
-            late    = Count(Case(When(status='late',    then=1), output_field=IntegerField())),
-            absent  = Count(Case(When(status='absent',  then=1), output_field=IntegerField())),
-        )
-        att_loc_map = {row['location_id']: row for row in att_loc_rows}
-
-        # ── 1. Location cards ─────────────────────────────────────
-        location_cards = []
-        for loc in all_locations.filter(id__in=scoped_loc_ids):
-            t         = task_loc_map.get(loc.id, {})
-            total     = t.get('total',     0)
-            completed = t.get('completed', 0)
-            rate      = round((completed / total * 100)) if total > 0 else 0
-            location_cards.append({
-                'location_id':     loc.id,
-                'location_name':   loc.name,
-                'task_completion': rate,
-            })
-
-        # ── 2. Location comparison (bar chart) ───────────────────
-        location_comparison = []
-        for loc in all_locations.filter(id__in=scoped_loc_ids):
-            t = task_loc_map.get(loc.id, {})
-            a = att_loc_map.get(loc.id, {})
-
-            total     = t.get('total',     0)
-            completed = t.get('completed', 0)
-            task_rate = round((completed / total * 100)) if total > 0 else 0
-
-            attended  = a.get('present', 0) + a.get('late', 0)
-            att_total = attended + a.get('absent', 0)
-            att_rate  = round((attended / att_total * 100)) if att_total > 0 else 0
-
-            location_comparison.append({
-                'location_id':     loc.id,
-                'location_name':   loc.name,
-                'task_completion': task_rate,
-                'attendance_rate': att_rate,
-            })
-
-        # ── 3. Location performance overview (donut charts) ───────
-        per_location_overview = []
-        for loc in all_locations.filter(id__in=scoped_loc_ids):
-            t = task_loc_map.get(loc.id, {})
-            a = att_loc_map.get(loc.id, {})
-
-            total         = t.get('total',     0)
-            completed     = t.get('completed', 0)
-            loc_task_rate = round((completed / total * 100)) if total > 0 else 0
-
-            attended       = a.get('present', 0) + a.get('late', 0)
-            att_total      = attended + a.get('absent', 0)
-            loc_att_rate   = round((attended / att_total * 100)) if att_total > 0 else 0
-
-            on_time        = a.get('present', 0)
-            loc_timeliness = round((on_time / attended * 100)) if attended > 0 else 0
-
-            loc_rating = round((loc_task_rate * 0.6) + (loc_att_rate  * 0.4))
-            loc_staff  = round((loc_timeliness * 0.5) + (loc_att_rate * 0.5))
-
-            per_location_overview.append({
-                'location_id':     loc.id,
-                'location_name':   loc.name,
-                'task_completion': loc_task_rate,
-                'attendance_rate': loc_att_rate,
-                'timeliness':      loc_timeliness,
-                'rating_score':    loc_rating,
-                'staff_score':     loc_staff,
-            })
-
-        def _avg(key):
-            vals = [loc[key] for loc in per_location_overview]
-            return round(sum(vals) / len(vals)) if vals else 0
-
-        location_performance_overview = {
-            'avg_task_completion': _avg('task_completion'),
-            'avg_attendance_rate': _avg('attendance_rate'),
-            'avg_timeliness':      _avg('timeliness'),
-            'avg_rating_score':    _avg('rating_score'),
-            'avg_staff_score':     _avg('staff_score'),
-            'per_location':        per_location_overview,
-        }
-
-        # ── 4. Employee breakdown — apply name search if provided ─
-        scoped_emp_qs = emp_qs
-        if search:
-            scoped_emp_qs = emp_qs.filter(
-                Q(first_name__icontains=search) |
-                Q(last_name__icontains=search)
-            )
-
-        scoped_emp_ids = list(scoped_emp_qs.values_list('id', flat=True))
-
-        # Bulk task stats per employee for selected period
-        emp_task_rows = Task.objects.filter(
-            assigned_to_id__in = scoped_emp_ids,
-            created_at__gte    = start_datetime,
-        ).values('assigned_to_id').annotate(
-            completed = Count(Case(When(status__in=['completed', 'approved'], then=1), output_field=IntegerField())),
-            overdue   = Count(Case(When(status='overdue', then=1), output_field=IntegerField())),
-        )
-        emp_task_map = {row['assigned_to_id']: row for row in emp_task_rows}
-
-        # Bulk attendance stats per employee for selected period
-        emp_att_rows = Attendance.objects.filter(
-            user_id__in = scoped_emp_ids,
-            date__gte   = start_date,
-        ).values('user_id').annotate(
-            present = Count(Case(When(status='present', then=1), output_field=IntegerField())),
-            late    = Count(Case(When(status='late',    then=1), output_field=IntegerField())),
-            absent  = Count(Case(When(status='absent',  then=1), output_field=IntegerField())),
-        )
-        emp_att_map = {row['user_id']: row for row in emp_att_rows}
-
-        employee_breakdown = []
-        for emp in scoped_emp_qs.order_by('first_name'):
-            t = emp_task_map.get(emp.id, {})
-            a = emp_att_map.get(emp.id, {})
-            employee_breakdown.append({
-                'id':            emp.id,
-                'name':          f"{emp.first_name} {emp.last_name}".strip(),
-                'role':          emp.get_role_display(),
-                'location_name': emp.location.name if emp.location else '—',
-                'total_present': a.get('present',  0),
-                'total_absent':  a.get('absent',   0),
-                'total_late':    a.get('late',      0),
-                'completed':     t.get('completed', 0),
-                'overdue':       t.get('overdue',   0),
-            })
-
-        # ── 5. Task log ───────────────────────────────────────────
+        # ── 10 most recent tasks ──────────────────────────────────
         task_log_qs = Task.objects.filter(
-            location_id__in = scoped_loc_ids,
-            created_at__gte = start_datetime,
+            location_id__in=location_ids,
         ).select_related(
             'assigned_to', 'location', 'created_by'
-        ).order_by('-created_at')
-
-        # If search active → filter task log to matching employees only
-        if search:
-            task_log_qs = task_log_qs.filter(assigned_to_id__in=scoped_emp_ids)
-
-        paginator           = PageNumberPagination()
-        paginator.page_size = 10
-        page                = paginator.paginate_queryset(task_log_qs, request)
+        ).order_by('-created_at')[:10]
 
         task_log = [
             {
@@ -1267,14 +1085,265 @@ class DistrictManagerPerformanceDashboardView(APIView):
                 'due_date':         task.due_date,
                 'status':           task.status,
             }
-            for task in page
+            for task in task_log_qs
         ]
-        task_log_paginated = paginator.get_paginated_response(task_log).data
+
+        return Response({'task_log': task_log}, status=status.HTTP_200_OK)
+    
+# ================================================================
+# DISTRICT MANAGER — USER ATTENDANCE LIST (paginated)
+# ================================================================
+
+class DistrictManagerUserAttendanceListView(APIView):
+    permission_classes = [IsDistrictManager]
+
+    def get(self, request):
+        search          = request.query_params.get('search', '').strip()
+        location_filter = request.query_params.get('location')
+        year            = request.query_params.get('year', str(timezone.now().year))
+
+        try:
+            year = int(year)
+        except ValueError:
+            return Response({'error': 'Invalid year.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        start_date = date(year, 1, 1)
+        end_date   = date(year, 12, 31)
+
+        # ── Validate locations ────────────────────────────────────
+        all_locations = get_active_locations()
+        location_ids  = list(all_locations.values_list('id', flat=True))
+
+        if location_filter:
+            try:
+                location_filter = int(location_filter)
+                if location_filter not in location_ids:
+                    return Response({'error': 'Invalid location.'}, status=status.HTTP_400_BAD_REQUEST)
+                scoped_loc_ids = [location_filter]
+            except (ValueError, TypeError):
+                return Response({'error': 'location must be a valid integer.'}, status=status.HTTP_400_BAD_REQUEST)
+        else:
+            scoped_loc_ids = location_ids
+
+        # ── Employee queryset ─────────────────────────────────────
+        emp_qs = User.objects.filter(
+            role__in        = EMPLOYEE_ROLES,
+            is_active       = True,
+            location_id__in = scoped_loc_ids,
+        ).select_related('location').order_by('first_name', 'last_name')
+
+        if search:
+            emp_qs = emp_qs.filter(
+                Q(first_name__icontains=search) |
+                Q(last_name__icontains=search)
+            )
+
+        emp_ids = list(emp_qs.values_list('id', flat=True))
+
+        # ── Bulk yearly attendance totals per employee ────────────
+        att_rows = Attendance.objects.filter(
+            user_id__in = emp_ids,
+            date__gte   = start_date,
+            date__lte   = end_date,
+        ).values('user_id').annotate(
+            present = Count(Case(When(status='present', then=1), output_field=IntegerField())),
+            late    = Count(Case(When(status='late',    then=1), output_field=IntegerField())),
+            absent  = Count(Case(When(status='absent',  then=1), output_field=IntegerField())),
+        )
+        att_map = {row['user_id']: row for row in att_rows}
+
+        # ── Build rows ────────────────────────────────────────────
+        employee_rows = []
+        for emp in emp_qs:
+            a = att_map.get(emp.id, {})
+            employee_rows.append({
+                'id':            emp.id,
+                'name':          f"{emp.first_name} {emp.last_name}".strip(),
+                'role':          emp.get_role_display(),
+                'location_name': emp.location.name if emp.location else '—',
+                'location_id':   emp.location.id   if emp.location else None,
+                'present':       a.get('present', 0),
+                'late':          a.get('late',    0),
+                'absent':        a.get('absent',  0),
+            })
+
+        # ── Paginate ──────────────────────────────────────────────
+        paginator           = PageNumberPagination()
+        paginator.page_size = 15
+        page                = paginator.paginate_queryset(employee_rows, request)
+        paginated           = paginator.get_paginated_response(page).data
 
         return Response({
-            'period':                        period,
-            'location_comparison':           location_comparison,
-            'location_performance_overview': location_performance_overview,
-            'employee_breakdown':            employee_breakdown,
-            'task_log':                      task_log_paginated,
+            'year':          year,
+            'employees':     paginated['results'],
+            'employees_meta': {
+                'count':    paginated['count'],
+                'next':     paginated['next'],
+                'previous': paginated['previous'],
+            },
+        }, status=status.HTTP_200_OK)
+
+
+# ================================================================
+# DISTRICT MANAGER — EMPLOYEE ATTENDANCE DETAIL (drill-down)
+# ================================================================
+class DistrictManagerEmployeeAttendanceDetailView(APIView):
+    permission_classes = [IsDistrictManager]
+
+    WEEKDAY_MAP = {
+        0: 'mon',
+        1: 'tue',
+        2: 'wed',
+        3: 'thu',
+        4: 'fri',
+        5: 'sat',
+        6: 'sun',
+    }
+
+    def get(self, request, employee_id):
+        year_param  = request.query_params.get('year', str(timezone.now().year))
+        month_param = request.query_params.get('month')  # e.g. "2025-01"
+
+        try:
+            year = int(year_param)
+        except ValueError:
+            return Response({'error': 'Invalid year.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # ── Validate employee ─────────────────────────────────────
+        all_locations = get_active_locations()
+        location_ids  = list(all_locations.values_list('id', flat=True))
+
+        try:
+            emp = User.objects.select_related('location').get(
+                id              = employee_id,
+                role__in        = EMPLOYEE_ROLES,
+                is_active       = True,
+                location_id__in = location_ids,
+            )
+        except User.DoesNotExist:
+            return Response({'error': 'Employee not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        emp_info = {
+            'id':       emp.id,
+            'name':     f"{emp.first_name} {emp.last_name}".strip(),
+            'role':     emp.get_role_display(),
+            'location': emp.location.name if emp.location else '—',
+        }
+
+        # ── Fetch employee's active work days once ────────────────
+        work_days = set(
+            UserWorkSchedule.objects.filter(
+                user      = emp,
+                is_active = True,
+            ).values_list('day', flat=True)
+        )
+
+        # ── MODE 1: month param given → return day grid ───────────
+        if month_param:
+            try:
+                parsed     = datetime.strptime(month_param, '%Y-%m')
+                month_year = parsed.year
+                month_num  = parsed.month
+                start_date = date(month_year, month_num, 1)
+                if month_num == 12:
+                    end_date = date(month_year, 12, 31)
+                else:
+                    end_date = date(month_year, month_num + 1, 1) - timedelta(days=1)
+            except ValueError:
+                return Response(
+                    {'error': 'Invalid month format. Use YYYY-MM.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            att_qs  = Attendance.objects.filter(
+                user      = emp,
+                date__gte = start_date,
+                date__lte = end_date,
+            )
+            att_map = {a.date: a for a in att_qs}
+
+            daily_records = []
+            current = start_date
+            while current <= end_date:
+                a           = att_map.get(current)
+                day_key     = self.WEEKDAY_MAP[current.weekday()]
+                is_work_day = day_key in work_days
+
+                if a:
+                    day_status = a.status
+                elif is_work_day:
+                    day_status = 'absent'
+                else:
+                    day_status = 'weekday'
+
+                daily_records.append({
+                    'date':        str(current),
+                    'day':         current.day,
+                    'weekday':     current.strftime('%a'),
+                    'is_work_day': is_work_day,
+                    'status':      day_status,  # present / late / absent / weekday
+                    'clock_in':    str(a.clock_in)  if a and a.clock_in  else None,
+                    'clock_out':   str(a.clock_out) if a and a.clock_out else None,
+                })
+                current += timedelta(days=1)
+
+            # Only count actual work days in summary
+            present = sum(1 for r in daily_records if r['status'] == 'present')
+            late    = sum(1 for r in daily_records if r['status'] == 'late')
+            absent  = sum(1 for r in daily_records if r['status'] == 'absent')
+
+            return Response({
+                'employee':    emp_info,
+                'mode':        'daily',
+                'month':       month_param,
+                'month_label': parsed.strftime('%B %Y'),
+                'summary': {
+                    'present': present,
+                    'late':    late,
+                    'absent':  absent,
+                },
+                'records': daily_records,
+            }, status=status.HTTP_200_OK)
+
+        # ── MODE 2: no month → return 12-month summary cards ──────
+        start_date = date(year, 1, 1)
+        end_date   = date(year, 12, 31)
+
+        att_qs = Attendance.objects.filter(
+            user      = emp,
+            date__gte = start_date,
+            date__lte = end_date,
+        ).values('date__month').annotate(
+            present = Count(Case(When(status='present', then=1), output_field=IntegerField())),
+            late    = Count(Case(When(status='late',    then=1), output_field=IntegerField())),
+            absent  = Count(Case(When(status='absent',  then=1), output_field=IntegerField())),
+        )
+        monthly_map = {row['date__month']: row for row in att_qs}
+
+        monthly_records = []
+        for m in range(1, 13):
+            data = monthly_map.get(m, {'present': 0, 'late': 0, 'absent': 0})
+            monthly_records.append({
+                'month':       m,
+                'month_label': date(year, m, 1).strftime('%b'),
+                'month_key':   f"{year}-{str(m).zfill(2)}",
+                'present':     data['present'],
+                'late':        data['late'],
+                'absent':      data['absent'],
+            })
+
+        total_present = sum(r['present'] for r in monthly_records)
+        total_late    = sum(r['late']    for r in monthly_records)
+        total_absent  = sum(r['absent']  for r in monthly_records)
+
+        return Response({
+            'employee': emp_info,
+            'mode':     'monthly',
+            'year':     year,
+            'summary': {
+                'present': total_present,
+                'late':    total_late,
+                'absent':  total_absent,
+            },
+            'records': monthly_records,
         }, status=status.HTTP_200_OK)

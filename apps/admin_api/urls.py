@@ -1,7 +1,7 @@
 # apps/admin_api/urls.py
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from .district_views import DistrictManagerDashboardView, DistrictManagerLocationsView, DistrictManagerReportsView, DistrictManagerTaskView, DistrictManagerTaskDetailView, DistrictManagerLocationEmployeesView, DistrictManagerVerificationActionView, DistrictManagerVerificationView,DistrictManagerProfileView, DistrictManagerChangePasswordView
+from .district_views import DistrictManagerDashboardView, DistrictManagerLocationsView, DistrictManagerReportsView, DistrictManagerTaskView, DistrictManagerTaskDetailView, DistrictManagerLocationEmployeesView, DistrictManagerVerificationActionView, DistrictManagerVerificationView,DistrictManagerProfileView, DistrictManagerChangePasswordView,DistrictManagerEmployeePerformanceView,DistrictManagerPerformanceDashboardView
 from .views import (
     AdminChangePasswordView,
     AdminLoginView,
@@ -94,5 +94,8 @@ urlpatterns = [
     path('district-manager/profile/',          DistrictManagerProfileView.as_view(),         name='district-manager-profile'),
     path('district-manager/profile/password/', DistrictManagerChangePasswordView.as_view(),  name='district-manager-change-password'),
     path('district-manager/locations/', DistrictManagerLocationsView.as_view(), name='district-manager-locations'),
+    path('district-manager/reports/employee-performance/',DistrictManagerEmployeePerformanceView.as_view(),name='district-manager-employee-performance'),
+    path('district-manager/performance/', DistrictManagerPerformanceDashboardView.as_view(), name='district-manager-performance'),
+    
 
 ] + router.urls

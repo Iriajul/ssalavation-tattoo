@@ -1,4 +1,5 @@
 # apps/users/views.py
+from django.db.models import Count, Case, When, IntegerField
 from rest_framework import filters, status, viewsets
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -507,14 +508,16 @@ class AppTaskViewSet(viewsets.ReadOnlyModelViewSet):
         queryset = self.filter_queryset(self.get_queryset())
 
         # ── Stats ─────────────────────────────────────────────────
-        all_tasks = Task.objects.filter(assigned_to=user)
-        stats = {
-            'total':    all_tasks.count(),
-            'pending':  all_tasks.filter(status='pending').count(),
-            'approved': all_tasks.filter(status='approved').count(),
-            'rejected': all_tasks.filter(status='rejected').count(),
-        }
-
+        all_tasks  = Task.objects.filter(assigned_to=user)
+        stats_data = all_tasks.aggregate(
+            total           = Count('id'),
+            pending         = Count(Case(When(status='pending',         then=1), output_field=IntegerField())),
+            awaiting_review = Count(Case(When(status='awaiting_review', then=1), output_field=IntegerField())),
+            approved        = Count(Case(When(status='approved',        then=1), output_field=IntegerField())),
+            rejected        = Count(Case(When(status='rejected',        then=1), output_field=IntegerField())),
+        )
+        stats = stats_data
+        
         page = self.paginate_queryset(queryset)
         if page is not None:
             serializer     = self.get_serializer(page, many=True)
@@ -578,7 +581,7 @@ class AppTaskViewSet(viewsets.ReadOnlyModelViewSet):
             task.photo_url = result['secure_url']
 
         # ── Mark as completed ─────────────────────────────────────
-        task.status       = 'completed'
+        task.status       = 'awaiting_review'   # ← change this
         task.completed_by = user
         task.completed_at = timezone.now()
         task.save(update_fields=[
@@ -596,9 +599,9 @@ class AppTaskViewSet(viewsets.ReadOnlyModelViewSet):
         )
 
         return Response({
-            "message":  "Task submitted successfully.",
-            "task_id":  task.id,
-            "title":    task.title,
-            "status":   task.status,
+            "message":   "Task submitted for review.",   # ← update message
+            "task_id":   task.id,
+            "title":     task.title,
+            "status":    task.status,                    # will now return 'awaiting_review'
             "photo_url": task.photo_url,
         }, status=status.HTTP_200_OK)

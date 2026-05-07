@@ -165,6 +165,7 @@ CSRF_TRUSTED_ORIGINS = [
     "https://stm9wlhp-8000.inc1.devtunnels.ms",
     "https://salvation-tattoo-jvai.vercel.app",
     "http://localhost:3000",
+    "https://api.salvationhq.com",
 ]
 
 # --------------------------------------------------

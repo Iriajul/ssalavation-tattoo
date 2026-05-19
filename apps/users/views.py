@@ -19,6 +19,8 @@ from .serializers import (
     AppLoginSerializer,
     AppTaskDetailSerializer,
     AppTaskListSerializer,
+    AppTaskHistoryListSerializer,
+    AppTaskHistoryDetailSerializer,
     AppInstructionDetailSerializer,
     AppInstructionListSerializer,
     VerifyLoginOTPSerializer,
@@ -624,3 +626,76 @@ class AppInstructionViewSet(viewsets.ReadOnlyModelViewSet):
         if self.action == 'retrieve':
             return AppInstructionDetailSerializer
         return AppInstructionListSerializer
+
+
+# ================================================================
+# APP — TASK HISTORY
+# ================================================================
+
+class AppTaskHistoryViewSet(viewsets.ReadOnlyModelViewSet):
+    permission_classes = [IsAuthenticated]
+    filter_backends    = [filters.SearchFilter]
+    search_fields      = ['title', 'description']
+
+    def get_queryset(self):
+        user     = self.request.user
+        # ── Show only tasks that are NOT pending (completed/reviewed/rejected) ──
+        queryset = Task.objects.filter(
+            assigned_to=user
+        ).exclude(
+            status='pending'
+        ).select_related(
+            'created_by', 'location',
+            'completed_by', 'approved_by', 'rejected_by'
+        ).order_by('-completed_at')
+
+        # ── Status filter ─────────────────────────────────────────
+        status_filter = self.request.query_params.get('status')
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+
+        return queryset
+
+    def get_serializer_class(self):
+        if self.action == 'retrieve':
+            return AppTaskHistoryDetailSerializer
+        return AppTaskHistoryListSerializer
+
+    def list(self, request, *args, **kwargs):
+        user     = request.user
+        queryset = self.filter_queryset(self.get_queryset())
+
+        # ── Stats: count tasks by status ──────────────────────────
+        all_history_tasks = Task.objects.filter(
+            assigned_to=user
+        ).exclude(status='pending')
+        
+        stats_data = all_history_tasks.aggregate(
+            total           = Count('id'),
+            awaiting_review = Count(Case(When(status='awaiting_review', then=1), output_field=IntegerField())),
+            approved        = Count(Case(When(status='approved',        then=1), output_field=IntegerField())),
+            rejected        = Count(Case(When(status='rejected',        then=1), output_field=IntegerField())),
+        )
+        stats = stats_data
+        
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer     = self.get_serializer(page, many=True)
+            paginated_data = self.get_paginated_response(serializer.data)
+            return Response({
+                'stats': stats,
+                'tasks': paginated_data.data,
+            }, status=status.HTTP_200_OK)
+
+        serializer = self.get_serializer(queryset, many=True)
+        return Response({
+            'stats': stats,
+            'tasks': serializer.data,
+        }, status=status.HTTP_200_OK)
+
+    def retrieve(self, request, *args, **kwargs):
+        task = self.get_object()
+        return Response(
+            AppTaskHistoryDetailSerializer(task).data,
+            status=status.HTTP_200_OK
+        )

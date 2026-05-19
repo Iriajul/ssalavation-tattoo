@@ -227,3 +227,86 @@ class AppTaskDetailSerializer(serializers.ModelSerializer):
         elif obj.due_date == tomorrow:
             return f"Tomorrow, {obj.due_date.strftime('%b %d, %Y')}"
         return obj.due_date.strftime('%b %d, %Y')
+
+
+# ================================================================
+# TASK HISTORY
+# ================================================================
+
+class AppTaskHistoryListSerializer(serializers.ModelSerializer):
+    """Lightweight serializer for task history list"""
+    assigned_by_name = serializers.SerializerMethodField()
+    assigned_by_role = serializers.SerializerMethodField()
+    created_date_display = serializers.SerializerMethodField()
+
+    class Meta:
+        model  = Task
+        fields = [
+            'id', 'title', 'status',
+            'assigned_by_name', 'assigned_by_role',
+            'created_at', 'created_date_display',
+            'completed_at', 'requires_photo',
+        ]
+
+    def get_assigned_by_name(self, obj):
+        if obj.created_by:
+            return f"{obj.created_by.first_name} {obj.created_by.last_name}".strip()
+        return "Admin"
+
+    def get_assigned_by_role(self, obj):
+        if not obj.created_by:
+            return 'ADMIN'
+        role_map = {
+            'super_admin':      'ADMIN',
+            'branch_manager':   'MGR',
+            'district_manager': 'DM',
+        }
+        return role_map.get(obj.created_by.role, 'ADMIN')
+
+    def get_created_date_display(self, obj):
+        if obj.completed_at:
+            return obj.completed_at.strftime('%b %d, %Y')
+        return obj.created_at.strftime('%b %d, %Y')
+
+
+class AppTaskHistoryDetailSerializer(serializers.ModelSerializer):
+    """Detailed serializer for task history detail"""
+    assigned_by_name = serializers.SerializerMethodField()
+    assigned_by_role = serializers.SerializerMethodField()
+    created_date_display = serializers.SerializerMethodField()
+
+    class Meta:
+        model  = Task
+        fields = [
+            'id', 'title', 'description', 'status',
+            'assigned_by_name', 'assigned_by_role',
+            'created_at', 'created_date_display',
+            'completed_at', 'photo_url', 'rejection_reason',
+            'requires_photo', 'is_recurring',
+        ]
+
+    def get_assigned_by_name(self, obj):
+        if obj.created_by:
+            role = obj.created_by.role
+            name = f"{obj.created_by.first_name} {obj.created_by.last_name}".strip()
+            if role == 'branch_manager':
+                return f"Manager — {name}"
+            elif role == 'district_manager':
+                return f"District Manager — {name}"
+            return f"Admin — {name}"
+        return "Admin"
+
+    def get_assigned_by_role(self, obj):
+        if not obj.created_by:
+            return 'ADMIN'
+        role_map = {
+            'super_admin':      'ADMIN',
+            'branch_manager':   'MGR',
+            'district_manager': 'DM',
+        }
+        return role_map.get(obj.created_by.role, 'ADMIN')
+
+    def get_created_date_display(self, obj):
+        if obj.completed_at:
+            return obj.completed_at.strftime('%b %d, %Y')
+        return obj.created_at.strftime('%b %d, %Y')

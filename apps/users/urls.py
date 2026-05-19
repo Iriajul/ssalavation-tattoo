@@ -12,11 +12,13 @@ from .views import (
     AppCheckOutView,
     AppTodayAttendanceView,
     AppTaskViewSet,
+    AppTaskHistoryViewSet,
     AppInstructionViewSet,
 )
 
 router = DefaultRouter()
 router.register('tasks', AppTaskViewSet, basename='app-tasks')
+router.register('tasks-history', AppTaskHistoryViewSet, basename='app-tasks-history')
 router.register('instructions', AppInstructionViewSet, basename='app-instructions')
 
 urlpatterns = [

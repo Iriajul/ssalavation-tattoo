@@ -215,7 +215,4 @@ CLOUDINARY_STORAGE = {
     "API_SECRET": env("CLOUDINARY_API_SECRET"),
 }
 
-FILE_UPLOAD_MAX_MEMORY_SIZE = None  # No limit
-DATA_UPLOAD_MAX_MEMORY_SIZE = None  # No limit
-
 DEFAULT_FILE_STORAGE = "cloudinary_storage.storage.MediaCloudinaryStorage"

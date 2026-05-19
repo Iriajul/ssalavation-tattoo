@@ -1,5 +1,5 @@
 # apps/users/serializers.py
-from apps.admin_api.models import Task
+from apps.admin_api.models import Task, Instruction
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
 
@@ -113,6 +113,30 @@ class AppUserSerializer(serializers.ModelSerializer):
             'id', 'first_name', 'last_name', 'username',
             'email', 'role', 'role_display', 'phone',
             'location', 'location_name', 'is_active',
+        ]
+
+
+class AppInstructionListSerializer(serializers.ModelSerializer):
+    """Lightweight instruction output for app lists"""
+
+    class Meta:
+        model = Instruction
+        fields = [
+            'id', 'title', 'description',
+            'pdf_url', 'pdf_filename',
+            'role_visibility', 'created_at',
+        ]
+
+
+class AppInstructionDetailSerializer(serializers.ModelSerializer):
+    """Detailed instruction output for app retrieve"""
+
+    class Meta:
+        model = Instruction
+        fields = [
+            'id', 'title', 'description',
+            'pdf_url', 'pdf_filename',
+            'role_visibility', 'created_at', 'updated_at',
         ]
 
 

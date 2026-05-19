@@ -13,12 +13,14 @@ from rest_framework_simplejwt.tokens import RefreshToken, UntypedToken
 from rest_framework_simplejwt.exceptions import InvalidToken
 from rest_framework.decorators import action
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
-from apps.admin_api.models import Attendance, QRSession, Task, UserWorkSchedule
+from apps.admin_api.models import Attendance, Instruction, QRSession, Task, UserWorkSchedule
 
 from .serializers import (
     AppLoginSerializer,
     AppTaskDetailSerializer,
     AppTaskListSerializer,
+    AppInstructionDetailSerializer,
+    AppInstructionListSerializer,
     VerifyLoginOTPSerializer,
     ResendLoginOTPSerializer,
     AppForgotPasswordSerializer,
@@ -605,3 +607,20 @@ class AppTaskViewSet(viewsets.ReadOnlyModelViewSet):
             "status":    task.status,                    # will now return 'awaiting_review'
             "photo_url": task.photo_url,
         }, status=status.HTTP_200_OK)
+
+
+class AppInstructionViewSet(viewsets.ReadOnlyModelViewSet):
+    permission_classes = [IsAuthenticated]
+    filter_backends    = [filters.SearchFilter]
+    search_fields      = ['title', 'description']
+
+    def get_queryset(self):
+        user = self.request.user
+        return Instruction.objects.filter(
+            role_visibility__contains=user.role
+        ).order_by('-created_at')
+
+    def get_serializer_class(self):
+        if self.action == 'retrieve':
+            return AppInstructionDetailSerializer
+        return AppInstructionListSerializer

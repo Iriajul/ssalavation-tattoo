@@ -196,6 +196,12 @@ USE_TZ = True
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # --------------------------------------------------
+# FILE UPLOAD SIZE LIMIT — 30MB
+# --------------------------------------------------
+DATA_UPLOAD_MAX_MEMORY_SIZE = 31457280  # 30MB
+FILE_UPLOAD_MAX_MEMORY_SIZE = 31457280  # 30MB
+
+# --------------------------------------------------
 # EMAIL
 # --------------------------------------------------
 EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"

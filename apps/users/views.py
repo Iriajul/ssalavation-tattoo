@@ -580,7 +580,8 @@ class AppTaskViewSet(viewsets.ReadOnlyModelViewSet):
             import cloudinary.uploader
             result        = cloudinary.uploader.upload(
                 photo,
-                folder='task_photos/'
+                folder='task_photos/',
+                chunk_size = 6000000,
             )
             task.photo_url = result['secure_url']
 

@@ -700,3 +700,144 @@ class AppTaskHistoryViewSet(viewsets.ReadOnlyModelViewSet):
             AppTaskHistoryDetailSerializer(task).data,
             status=status.HTTP_200_OK
         )
+    
+
+# ================================================================
+# APP — PROFILE
+# ================================================================
+
+class AppProfileView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user  = request.user
+        today = timezone.localdate()
+
+        # ── Task stats ────────────────────────────────────────────
+        stats = Task.objects.filter(assigned_to=user).aggregate(
+            completed = Count(Case(When(status='approved',         then=1), output_field=IntegerField())),
+            approved  = Count(Case(When(status='awaiting_review',  then=1), output_field=IntegerField())),
+            pending   = Count(Case(When(status='pending',          then=1), output_field=IntegerField())),
+        )
+
+        return Response({
+            'id':            user.id,
+            'employee_id':   f"ISL-{user.id:04d}",
+            'first_name':    user.first_name,
+            'last_name':     user.last_name,
+            'full_name':     f"{user.first_name} {user.last_name}".strip() or user.username,
+            'username':      user.username,
+            'email':         user.email,
+            'phone':         user.phone,
+            'role':          user.role,
+            'role_display':  user.get_role_display(),
+            'profile_photo': user.profile_photo,
+            'location':      user.location.name if user.location else None,
+            'joined':        user.date_joined.strftime('%B %Y'),
+            'is_active':     user.is_active,
+            'is_suspended':  user.is_suspended,
+            'stats': {
+                'completed': stats['completed'],   # approved by admin
+                'approved':  stats['approved'],    # awaiting review
+                'pending':   stats['pending'],
+            },
+        }, status=status.HTTP_200_OK)
+
+
+# ================================================================
+# APP — MY PERFORMANCE
+# ================================================================
+
+class AppPerformanceView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user   = request.user
+        period = request.query_params.get('period', 'weekly')
+        today  = timezone.localdate()
+
+        # ── Period range ──────────────────────────────────────────
+        if period == 'monthly':
+            # current month from day 1
+            start_date = today.replace(day=1)
+        else:  # weekly — last 7 days
+            start_date = today - timedelta(days=6)
+
+        # ── Task stats for period ─────────────────────────────────
+        period_tasks = Task.objects.filter(
+            assigned_to = user,
+            created_at__date__gte = start_date,
+        )
+
+        stats = period_tasks.aggregate(
+            total     = Count('id'),
+            completed = Count(Case(When(status='approved',  then=1), output_field=IntegerField())),
+            pending   = Count(Case(When(status='pending',   then=1), output_field=IntegerField())),
+            rejected  = Count(Case(When(status='rejected',  then=1), output_field=IntegerField())),
+        )
+
+        total            = stats['total']
+        completion_rate  = round((stats['completed'] / total * 100)) if total > 0 else 0
+
+        # ── Attendance rate for period ────────────────────────────
+        # Get employee's scheduled work days
+        work_days = set(
+            UserWorkSchedule.objects.filter(
+                user      = user,
+                is_active = True,
+            ).values_list('day', flat=True)
+        )
+
+        WEEKDAY_MAP = {0:'mon', 1:'tue', 2:'wed', 3:'thu', 4:'fri', 5:'sat', 6:'sun'}
+
+        # Count scheduled days in period
+        scheduled_days = sum(
+            1 for i in range((today - start_date).days + 1)
+            if WEEKDAY_MAP[(start_date + timedelta(days=i)).weekday()] in work_days
+        )
+
+        # Count attended days (present + late)
+        attended_days = Attendance.objects.filter(
+            user      = user,
+            date__gte = start_date,
+            date__lte = today,
+            status__in = ['present', 'late'],
+        ).count()
+
+        attendance_rate = round((attended_days / scheduled_days * 100)) if scheduled_days > 0 else 0
+        attendance_rate = min(attendance_rate, 100)
+
+        # ── Bar chart — daily task trend ──────────────────────────
+        chart_rows = Task.objects.filter(
+            assigned_to       = user,
+            created_at__date__gte = start_date,
+            created_at__date__lte = today,
+        ).values('created_at__date').annotate(
+            completed = Count(Case(When(status='approved', then=1), output_field=IntegerField())),
+            pending   = Count(Case(When(status='pending',  then=1), output_field=IntegerField())),
+        )
+        chart_map = {row['created_at__date']: row for row in chart_rows}
+
+        trend = []
+        total_days = (today - start_date).days + 1
+        for i in range(total_days):
+            day  = start_date + timedelta(days=i)
+            data = chart_map.get(day, {})
+            trend.append({
+                'date':      str(day),
+                'day':       day.strftime('%a') if period == 'weekly' else str(day.day),
+                'completed': data.get('completed', 0),
+                'pending':   data.get('pending',   0),
+            })
+
+        return Response({
+            'period': period,
+            'stats': {
+                'completed':       stats['completed'],
+                'pending':         stats['pending'],
+                'rejected':        stats['rejected'],
+                'completion_rate': completion_rate,
+                'attendance_rate': attendance_rate,
+            },
+            'trend': trend,
+        }, status=status.HTTP_200_OK)

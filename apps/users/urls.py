@@ -3,6 +3,8 @@ from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenRefreshView
 from .views import (
     AppLoginView,
+    AppPerformanceView,
+    AppProfileView,
     VerifyLoginOTPView,
     ResendLoginOTPView,
     AppForgotPasswordView,
@@ -36,4 +38,7 @@ urlpatterns = [
     path('attendance/today/',      AppTodayAttendanceView.as_view(),   name='app-today-attendance'),
     # ── Tasks ─────────────────────────────────────────────────────
     path('', include(router.urls)),
+
+    path('profile/',             AppProfileView.as_view(),     name='app-profile'),
+    path('profile/performance/', AppPerformanceView.as_view(), name='app-performance'),
 ]

@@ -8,6 +8,7 @@ from django.db.models import Count, Case, When, IntegerField, Q
 from django.utils import timezone
 from datetime import datetime, time, timedelta, date
 from .models import Location, Task, Attendance, UserWorkSchedule
+from apps.users.models import AppNotification
 from .permissions import IsDistrictManager         
 from .serializers import (
     TaskDetailSerializer,
@@ -400,11 +401,19 @@ class DistrictManagerTaskView(APIView):
         serializer = TaskCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         task = serializer.save(created_by=request.user)
+
+        AppNotification.objects.create(
+            recipient  = task.assigned_to,
+            notif_type = 'task_assigned',
+            title      = 'New Task Assigned',
+            message    = f"{request.user.get_full_name() or 'District Manager'} assigned you '{task.title}'",
+            task       = task,
+        )
+
         return Response({
             'message': 'Task created successfully.',
             'task':    TaskDetailSerializer(task).data,
         }, status=status.HTTP_201_CREATED)
-
 
 # ================================================================
 # DISTRICT MANAGER — TASK DETAIL
@@ -608,6 +617,15 @@ class DistrictManagerVerificationActionView(APIView):
             task.approved_at      = timezone.now()
             task.rejection_reason = None
             task.save(update_fields=['status', 'approved_by', 'approved_at', 'rejection_reason'])
+
+            AppNotification.objects.create(
+                recipient  = task.assigned_to,
+                notif_type = 'task_approved',
+                title      = 'Task Approved',
+                message    = f"Your '{task.title}' was approved by {request.user.get_full_name() or 'District Manager'}",
+                task       = task,
+            )
+
             return Response({
                 'message': 'Task approved successfully.',
                 'task':    TaskDetailSerializer(task).data,
@@ -635,6 +653,15 @@ class DistrictManagerVerificationActionView(APIView):
             task.rejected_at      = timezone.now()
             task.rejection_reason = rejection_reason
             task.save(update_fields=['status', 'rejected_by', 'rejected_at', 'rejection_reason'])
+
+            AppNotification.objects.create(
+                recipient  = task.assigned_to,
+                notif_type = 'task_rejected',
+                title      = 'Task Needs Revision',
+                message    = f"'{task.title}' was rejected. {rejection_reason}",
+                task       = task,
+            )
+
             return Response({
                 'message': 'Task rejected.',
                 'task':    TaskDetailSerializer(task).data,

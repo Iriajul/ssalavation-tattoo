@@ -5,6 +5,9 @@ from .views import (
     AppAttendanceView,
     AppHomeView,
     AppLoginView,
+    AppNotificationDeleteView,
+    AppNotificationMarkAllReadView,
+    AppNotificationView,
     AppPerformanceView,
     AppProfilePhotoView,
     AppProfileView,
@@ -45,4 +48,7 @@ urlpatterns = [
     path('profile/photo/', AppProfilePhotoView.as_view(), name='app-profile-photo'),
     path('home/',          AppHomeView.as_view(),           name='app-home'),
     path('home/activity/', AppRecentActivityView.as_view(), name='app-recent-activity'),
+    path('notifications/',          AppNotificationView.as_view(),            name='app-notifications'),
+    path('notifications/read-all/', AppNotificationMarkAllReadView.as_view(), name='app-notifications-read-all'),
+    path('notifications/<int:pk>/', AppNotificationDeleteView.as_view(),      name='app-notification-delete'),
 ]

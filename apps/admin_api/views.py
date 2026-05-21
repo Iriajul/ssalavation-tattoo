@@ -18,7 +18,7 @@ from rest_framework_simplejwt.exceptions import InvalidToken
 from rest_framework_simplejwt.token_blacklist.models import OutstandingToken, BlacklistedToken
 from django.db.models import Prefetch, Q, Count, Case, When, IntegerField
 import secrets
-
+from apps.users.models import AppNotification
 from .models import (
     FAQ, Attendance, Location, QRSession,
     SplashScreen, UserWorkSchedule, Task,
@@ -504,6 +504,13 @@ class TaskViewSet(viewsets.ModelViewSet):
             target_user = task.assigned_to,
             message     = f'Task "{task.title}" assigned to {task.assigned_to.get_full_name()}'
         )
+        AppNotification.objects.create(
+            recipient  = task.assigned_to,
+            notif_type = 'task_assigned',
+            title      = 'New Task Assigned',
+            message    = f"{request.user.get_full_name() or 'Admin'} assigned you '{task.title}'",
+            task       = task,
+        )
 
         return Response({
             'message': 'Task created successfully.',
@@ -567,6 +574,13 @@ class TaskViewSet(viewsets.ModelViewSet):
             target_user = task.assigned_to,
             message     = f'Task "{task.title}" approved for {task.assigned_to.get_full_name()}'
         )
+        AppNotification.objects.create(
+            recipient  = task.assigned_to,
+            notif_type = 'task_approved',
+            title      = 'Task Approved',
+            message    = f"Your '{task.title}' was approved by {request.user.get_full_name() or 'Admin'}",
+            task       = task,
+        )
 
         return Response({
             'message': 'Task approved successfully.',
@@ -597,6 +611,13 @@ class TaskViewSet(viewsets.ModelViewSet):
             task        = task,
             target_user = task.assigned_to,
             message     = f'Task "{task.title}" rejected — {serializer.validated_data["rejection_reason"]}'
+        )
+        AppNotification.objects.create(
+            recipient  = task.assigned_to,
+            notif_type = 'task_rejected',
+            title      = 'Task Needs Revision',
+            message    = f"'{task.title}' was rejected. {serializer.validated_data['rejection_reason']}",
+            task       = task,
         )
 
         return Response({
@@ -2485,6 +2506,13 @@ class BranchManagerTaskViewSet(viewsets.ModelViewSet):
             target_user=task.assigned_to,
             message=f'Task "{task.title}" assigned to {task.assigned_to.get_full_name()}'
         )
+        AppNotification.objects.create(
+            recipient  = task.assigned_to,
+            notif_type = 'task_assigned',
+            title      = 'New Task Assigned',
+            message    = f"{request.user.get_full_name() or 'Manager'} assigned you '{task.title}'",
+            task       = task,
+        )
 
         return Response({
             'message': 'Task created successfully.',
@@ -2525,6 +2553,13 @@ class BranchManagerTaskViewSet(viewsets.ModelViewSet):
         task.status = 'approved'; task.approved_by = request.user; task.approved_at = timezone.now(); task.rejection_reason = None
         task.save(update_fields=['status', 'approved_by', 'approved_at', 'rejection_reason'])
         ActivityLog.objects.create(action='task_approved', actor=request.user, task=task, target_user=task.assigned_to, message=f'Task "{task.title}" approved for {task.assigned_to.get_full_name()}')
+        AppNotification.objects.create(
+            recipient  = task.assigned_to,
+            notif_type = 'task_approved',
+            title      = 'Task Approved',
+            message    = f"Your '{task.title}' was approved by {request.user.get_full_name() or 'Manager'}",
+            task       = task,
+        )
         return Response({'message': 'Task approved successfully.', 'task': TaskDetailSerializer(task).data}, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=['post'], url_path='reject')
@@ -2538,6 +2573,13 @@ class BranchManagerTaskViewSet(viewsets.ModelViewSet):
         task.status = 'rejected'; task.rejected_by = request.user; task.rejected_at = timezone.now(); task.rejection_reason = serializer.validated_data['rejection_reason']
         task.save(update_fields=['status', 'rejected_by', 'rejected_at', 'rejection_reason'])
         ActivityLog.objects.create(action='task_rejected', actor=request.user, task=task, target_user=task.assigned_to, message=f'Task "{task.title}" rejected — {serializer.validated_data["rejection_reason"]}')
+        AppNotification.objects.create(
+            recipient  = task.assigned_to,
+            notif_type = 'task_rejected',
+            title      = 'Task Needs Revision',
+            message    = f"'{task.title}' was rejected. {serializer.validated_data['rejection_reason']}",
+            task       = task,
+        )
         return Response({'message': 'Task rejected.', 'task': TaskDetailSerializer(task).data}, status=status.HTTP_200_OK)
 
 

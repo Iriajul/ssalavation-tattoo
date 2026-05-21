@@ -13,7 +13,8 @@ from rest_framework_simplejwt.tokens import RefreshToken, UntypedToken
 from rest_framework_simplejwt.exceptions import InvalidToken
 from rest_framework.decorators import action
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
-from apps.admin_api.models import Attendance, Instruction, QRSession, Task, UserWorkSchedule, ActivityLog
+from apps.admin_api.models import Attendance, Instruction, QRSession, Task, UserWorkSchedule, ActivityLog   
+from .models import AppNotification
 
 from .serializers import (
     AppLoginSerializer,
@@ -374,7 +375,7 @@ class AppAttendanceView(APIView):
             'date':          str(today),
             'location_name': qr_session.location.name,
         }, status=status.HTTP_200_OK)
-        
+
 class AppTodayAttendanceView(APIView):
     """Get today's attendance status for home screen"""
     permission_classes = [IsAuthenticated]
@@ -983,3 +984,86 @@ class AppRecentActivityView(APIView):
         else:
             days = seconds // 86400
             return f"{days}d ago"
+
+
+
+# ================================================================
+# APP — NOTIFICATIONS
+# ================================================================
+
+class AppNotificationView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        tab  = request.query_params.get('tab', 'all')  # all / unread
+
+        notifs = AppNotification.objects.filter(recipient=user)
+
+        if tab == 'unread':
+            notifs = notifs.filter(is_read=False)
+
+        unread_count = AppNotification.objects.filter(
+            recipient = user,
+            is_read   = False,
+        ).count()
+
+        now  = timezone.now()
+        data = [
+            {
+                'id':       n.id,
+                'type':     n.notif_type,
+                'title':    n.title,
+                'message':  n.message,
+                'is_read':  n.is_read,
+                'task_id':  n.task.id if n.task else None,
+                'time_ago': self._time_ago(n.created_at, now),
+            }
+            for n in notifs
+        ]
+
+        return Response({
+            'unread_count':  unread_count,
+            'notifications': data,
+        }, status=status.HTTP_200_OK)
+
+    def _time_ago(self, dt, now):
+        seconds = int((now - dt).total_seconds())
+        if seconds < 60:       return 'Just now'
+        elif seconds < 3600:   return f"{seconds // 60}m ago"
+        elif seconds < 86400:  return f"{seconds // 3600}h ago"
+        elif seconds < 172800: return 'Yesterday'
+        else:                  return f"{seconds // 86400}d ago"
+
+
+class AppNotificationMarkAllReadView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        AppNotification.objects.filter(
+            recipient = request.user,
+            is_read   = False,
+        ).update(is_read=True)
+
+        return Response(
+            {'message': 'All notifications marked as read.'},
+            status=status.HTTP_200_OK
+        )
+
+
+class AppNotificationDeleteView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, pk):
+        try:
+            notif = AppNotification.objects.get(pk=pk, recipient=request.user)
+            notif.delete()
+            return Response(
+                {'message': 'Notification deleted.'},
+                status=status.HTTP_200_OK
+            )
+        except AppNotification.DoesNotExist:
+            return Response(
+                {'error': 'Notification not found.'},
+                status=status.HTTP_404_NOT_FOUND
+            )

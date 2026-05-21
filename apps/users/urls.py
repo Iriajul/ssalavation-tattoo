@@ -14,8 +14,6 @@ from .views import (
     AppForgotPasswordView,
     AppVerifyResetOTPView,
     AppResetPasswordView,
-    AppCheckInView,
-    AppCheckOutView,
     AppTodayAttendanceView,
     AppTaskViewSet,
     AppTaskHistoryViewSet,

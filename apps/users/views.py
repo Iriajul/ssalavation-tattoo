@@ -13,7 +13,7 @@ from rest_framework_simplejwt.tokens import RefreshToken, UntypedToken
 from rest_framework_simplejwt.exceptions import InvalidToken
 from rest_framework.decorators import action
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
-from apps.admin_api.models import Attendance, Instruction, QRSession, Task, UserWorkSchedule
+from apps.admin_api.models import Attendance, Instruction, QRSession, Task, UserWorkSchedule, ActivityLog
 
 from .serializers import (
     AppLoginSerializer,
@@ -64,7 +64,9 @@ def send_otp_email(email, otp, subject="Salvation Tattoo — Login Code"):
     except Exception as e:
         print(f"Email sending failed: {e}")
 
-
+def today_start(now):
+    """Returns date 7 days ago for recent attendance fetch"""
+    return (now - timedelta(days=7)).date()
 # ================================================================
 # STEP 1 — LOGIN (validates credentials → sends OTP)
 # ================================================================
@@ -875,3 +877,185 @@ class AppProfilePhotoView(APIView):
             'message':       'Profile photo updated successfully.',
             'profile_photo': user.profile_photo,
         }, status=status.HTTP_200_OK)
+    
+
+
+# ================================================================
+# APP — HOME
+# ================================================================
+
+class AppHomeView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user  = request.user
+        now   = timezone.localtime()
+        today = timezone.localdate()
+
+        # ── Greeting ──────────────────────────────────────────────
+        hour = now.hour
+        if hour < 12:   greeting = "Good morning"
+        elif hour < 17: greeting = "Good afternoon"
+        else:           greeting = "Good evening"
+
+        # ── Today's attendance ────────────────────────────────────
+        attendance = Attendance.objects.filter(user=user, date=today).first()
+
+        if not attendance:
+            attendance_data = {
+                'status':    'not_checked_in',
+                'clock_in':  None,
+                'clock_out': None,
+            }
+        else:
+            attendance_data = {
+                'status':    attendance.status if not attendance.clock_out else 'checked_out',
+                'clock_in':  attendance.clock_in.strftime('%I:%M %p') if attendance.clock_in else None,
+                'clock_out': attendance.clock_out.strftime('%I:%M %p') if attendance.clock_out else None,
+            }
+
+        # ── Today's tasks ─────────────────────────────────────────
+        today_tasks = Task.objects.filter(
+            assigned_to = user,
+            due_date    = today,
+        ).select_related('created_by', 'location').order_by('due_date')
+
+        task_stats = today_tasks.aggregate(
+            total     = Count('id'),
+            pending   = Count(Case(When(status='pending',  then=1), output_field=IntegerField())),
+            completed = Count(Case(When(status='approved', then=1), output_field=IntegerField())),
+        )
+
+        # One upcoming pending task preview
+        upcoming_task = today_tasks.filter(status='pending').first()
+        upcoming_task_data = None
+        if upcoming_task:
+            upcoming_task_data = {
+                'id':       upcoming_task.id,
+                'title':    upcoming_task.title,
+                'due_date': upcoming_task.due_date.strftime('%b %d, %Y'),
+                'status':   upcoming_task.status,
+            }
+
+        return Response({
+            'greeting':   f"{greeting},",
+            'full_name':  f"{user.first_name} {user.last_name}".strip() or user.username,
+            'attendance': attendance_data,
+            'tasks': {
+                'pending':   task_stats['pending'],
+                'completed': task_stats['completed'],
+                'total':     task_stats['total'],
+                'upcoming':  upcoming_task_data,
+            },
+        }, status=status.HTTP_200_OK)
+
+
+# ================================================================
+# APP — RECENT ACTIVITY
+# ================================================================
+
+class AppRecentActivityView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user  = request.user
+        now   = timezone.now()
+
+        # ── Task activity from ActivityLog ────────────────────────
+        task_logs = ActivityLog.objects.filter(
+            target_user = user,
+        ).select_related('task').order_by('-created_at')[:20]
+
+        task_activities = []
+        for log in task_logs:
+            task_title = f"'{log.task.title}'" if log.task else ''
+
+            if log.action == 'task_completed':
+                message = f"You submitted '{log.task.title}' for review"
+                dot     = 'yellow'
+            elif log.action == 'task_approved':
+                message = f"Task {task_title} was approved"
+                dot     = 'green'
+            elif log.action == 'task_rejected':
+                message = f"Task {task_title} was rejected"
+                dot     = 'red'
+            elif log.action == 'task_assigned':
+                message = f"New task assigned: {task_title}"
+                dot     = 'orange'
+            else:
+                message = log.message
+                dot     = 'grey'
+
+            task_activities.append({
+                'type':       log.action,
+                'message':    message,
+                'dot':        dot,
+                'created_at': log.created_at,
+                'time_ago':   self._time_ago(log.created_at, now),
+            })
+
+        # ── Attendance activity from Attendance model ─────────────
+        recent_attendances = Attendance.objects.filter(
+            user      = user,
+            date__gte = today_start(now),
+        ).order_by('-date')[:10]
+
+        att_activities = []
+        for att in recent_attendances:
+            if att.clock_out:
+                att_activities.append({
+                    'type':       'checked_out',
+                    'message':    f"You checked out at {att.clock_out.strftime('%I:%M %p')}",
+                    'dot':        'grey',
+                    'created_at': timezone.make_aware(
+                        timezone.datetime.combine(att.date, att.clock_out)
+                    ),
+                    'time_ago':   self._time_ago(
+                        timezone.make_aware(timezone.datetime.combine(att.date, att.clock_out)), now
+                    ),
+                })
+            if att.clock_in:
+                att_activities.append({
+                    'type':       'checked_in',
+                    'message':    f"You checked in at {att.clock_in.strftime('%I:%M %p')}",
+                    'dot':        'green',
+                    'created_at': timezone.make_aware(
+                        timezone.datetime.combine(att.date, att.clock_in)
+                    ),
+                    'time_ago':   self._time_ago(
+                        timezone.make_aware(timezone.datetime.combine(att.date, att.clock_in)), now
+                    ),
+                })
+
+        # ── Merge and sort by time ────────────────────────────────
+        all_activities = sorted(
+            task_activities + att_activities,
+            key     = lambda x: x['created_at'],
+            reverse = True,
+        )[:20]
+
+        # Remove created_at from response — frontend doesn't need raw datetime
+        for a in all_activities:
+            del a['created_at']
+
+        return Response({
+            'activities': all_activities,
+        }, status=status.HTTP_200_OK)
+
+    def _time_ago(self, dt, now):
+        diff = now - dt
+        seconds = int(diff.total_seconds())
+
+        if seconds < 60:
+            return 'Just now'
+        elif seconds < 3600:
+            m = seconds // 60
+            return f"{m}m ago"
+        elif seconds < 86400:
+            h = seconds // 3600
+            return f"{h}h ago"
+        elif seconds < 172800:
+            return 'Yesterday'
+        else:
+            days = seconds // 86400
+            return f"{days}d ago"

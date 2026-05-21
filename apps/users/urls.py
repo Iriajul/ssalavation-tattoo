@@ -2,10 +2,12 @@ from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenRefreshView
 from .views import (
+    AppHomeView,
     AppLoginView,
     AppPerformanceView,
     AppProfilePhotoView,
     AppProfileView,
+    AppRecentActivityView,
     VerifyLoginOTPView,
     ResendLoginOTPView,
     AppForgotPasswordView,
@@ -43,4 +45,6 @@ urlpatterns = [
     path('profile/',             AppProfileView.as_view(),     name='app-profile'),
     path('profile/performance/', AppPerformanceView.as_view(), name='app-performance'),
     path('profile/photo/', AppProfilePhotoView.as_view(), name='app-profile-photo'),
+    path('home/',          AppHomeView.as_view(),           name='app-home'),
+    path('home/activity/', AppRecentActivityView.as_view(), name='app-recent-activity'),
 ]

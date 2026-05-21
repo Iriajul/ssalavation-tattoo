@@ -964,7 +964,7 @@ class AppRecentActivityView(APIView):
         # ── Task activity from ActivityLog ────────────────────────
         task_logs = ActivityLog.objects.filter(
             target_user = user,
-        ).select_related('task').order_by('-created_at')[:20]
+        ).select_related('task').order_by('-created_at')[:5]
 
         task_activities = []
         for log in task_logs:

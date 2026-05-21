@@ -4,6 +4,7 @@ from django.db import models
 import secrets
 from datetime import timedelta
 from django.utils import timezone
+from django.conf import settings
 
 
 class User(AbstractUser):
@@ -145,3 +146,43 @@ class User(AbstractUser):
 
     def is_branch_manager(self):
         return self.role == 'branch_manager'
+    
+
+class AppNotification(models.Model):
+
+    class NotifType(models.TextChoices):
+        TASK_ASSIGNED  = 'task_assigned',  'Task Assigned'
+        TASK_APPROVED  = 'task_approved',  'Task Approved'
+        TASK_REJECTED  = 'task_rejected',  'Task Rejected'
+        TASK_DUE_SOON  = 'task_due_soon',  'Task Due Soon'
+        SYSTEM         = 'system',         'System'
+
+    recipient  = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete    = models.CASCADE,
+        related_name = 'app_notifications'
+    )
+    notif_type = models.CharField(max_length=20, choices=NotifType.choices)
+    title      = models.CharField(max_length=255)
+    message    = models.TextField()
+    is_read    = models.BooleanField(default=False)
+    task       = models.ForeignKey(
+        'admin_api.Task',
+        on_delete    = models.SET_NULL,
+        null=True, blank=True,
+        related_name = 'app_notifications'
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'app_notifications'
+        ordering = ['-created_at']
+        indexes  = [
+            models.Index(fields=['recipient'],            name='appnotif_recipient_idx'),
+            models.Index(fields=['is_read'],              name='appnotif_is_read_idx'),
+            models.Index(fields=['recipient', 'is_read'], name='appnotif_recipient_read_idx'),
+            models.Index(fields=['created_at'],           name='appnotif_created_at_idx'),
+        ]
+
+    def __str__(self):
+        return f"{self.notif_type} → {self.recipient.email}"

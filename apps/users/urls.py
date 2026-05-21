@@ -2,6 +2,7 @@ from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenRefreshView
 from .views import (
+    AppAttendanceView,
     AppHomeView,
     AppLoginView,
     AppPerformanceView,
@@ -36,8 +37,7 @@ urlpatterns = [
     path('auth/reset-password/',   AppResetPasswordView.as_view(),  name='app-reset-password'),
     path('auth/token/refresh/',    TokenRefreshView.as_view(),      name='token-refresh'),
     # ── Attendance ────────────────────────────────────────────────
-    path('attendance/checkin/',    AppCheckInView.as_view(),           name='app-checkin'),
-    path('attendance/checkout/',   AppCheckOutView.as_view(),          name='app-checkout'),
+    path('attendance/', AppAttendanceView.as_view(), name='app-attendance'),
     path('attendance/today/',      AppTodayAttendanceView.as_view(),   name='app-today-attendance'),
     # ── Tasks ─────────────────────────────────────────────────────
     path('', include(router.urls)),

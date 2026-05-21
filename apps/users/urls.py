@@ -4,6 +4,7 @@ from rest_framework_simplejwt.views import TokenRefreshView
 from .views import (
     AppLoginView,
     AppPerformanceView,
+    AppProfilePhotoView,
     AppProfileView,
     VerifyLoginOTPView,
     ResendLoginOTPView,
@@ -41,4 +42,5 @@ urlpatterns = [
 
     path('profile/',             AppProfileView.as_view(),     name='app-profile'),
     path('profile/performance/', AppPerformanceView.as_view(), name='app-performance'),
+    path('profile/photo/', AppProfilePhotoView.as_view(), name='app-profile-photo'),
 ]

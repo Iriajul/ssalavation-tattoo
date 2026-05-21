@@ -841,3 +841,37 @@ class AppPerformanceView(APIView):
             },
             'trend': trend,
         }, status=status.HTTP_200_OK)
+
+
+# ================================================================
+# APP — UPDATE PROFILE PHOTO
+# ================================================================
+
+class AppProfilePhotoView(APIView):
+    permission_classes = [IsAuthenticated]
+    parser_classes     = [MultiPartParser, FormParser]
+
+    def patch(self, request):
+        user  = request.user
+        photo = request.FILES.get('profile_photo')
+
+        if not photo:
+            return Response(
+                {'error': 'No photo provided.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        import cloudinary.uploader
+        result = cloudinary.uploader.upload(
+            photo,
+            folder     = 'profile_photos/',
+            chunk_size = 6000000,
+        )
+
+        user.profile_photo = result['secure_url']
+        user.save(update_fields=['profile_photo'])
+
+        return Response({
+            'message':       'Profile photo updated successfully.',
+            'profile_photo': user.profile_photo,
+        }, status=status.HTTP_200_OK)

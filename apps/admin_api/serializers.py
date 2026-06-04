@@ -9,7 +9,7 @@ from .models import FAQ, Attendance, Location, QRSession, SplashScreen, UserWork
 User = get_user_model()
 
 # Roles that require a weekly schedule
-SCHEDULE_ROLES = ['tattoo_artist', 'body_piercer', 'staff']
+SCHEDULE_ROLES = ['tattoo_artist', 'body_piercer', 'staff', 'branch_manager', 'district_manager']
 ASSIGNABLE_ROLES = ['tattoo_artist', 'body_piercer', 'staff']
 
 # ================================================================
@@ -137,6 +137,7 @@ class UserListSerializer(serializers.ModelSerializer):
     location_name = serializers.CharField(source='location.name', read_only=True)
     joined        = serializers.DateTimeField(source='date_joined', format='%b %d, %Y', read_only=True)
     user_status   = serializers.SerializerMethodField()
+    work_schedules = WorkScheduleSerializer(many=True, read_only=True)
 
     class Meta:
         model  = User
@@ -144,7 +145,7 @@ class UserListSerializer(serializers.ModelSerializer):
             'id', 'first_name', 'last_name', 'username',
             'email', 'role', 'role_display',
             'location', 'location_name',
-            'is_active', 'is_suspended', 'user_status', 'joined',
+            'is_active', 'is_suspended', 'user_status', 'joined', 'work_schedules',
         ]
 
     def get_user_status(self, obj):
@@ -266,7 +267,7 @@ class UserUpdateSerializer(serializers.ModelSerializer):
         work_schedules = data.get('work_schedules', None)
 
         # Block schedule update for manager roles
-        MANAGER_ROLES = ['district_manager', 'branch_manager', 'super_admin']
+        MANAGER_ROLES = ['super_admin']
         if work_schedules is not None and role in MANAGER_ROLES:
             raise serializers.ValidationError({
                 "work_schedules": f"Work schedule cannot be set for role '{role}'."
@@ -296,7 +297,7 @@ class UserUpdateSerializer(serializers.ModelSerializer):
         instance.save()
 
         # ── Schedule update ───────────────────────────────────────
-        SCHEDULE_ROLES = ['tattoo_artist', 'body_piercer', 'staff']
+        SCHEDULE_ROLES = ['tattoo_artist', 'body_piercer', 'staff', 'branch_manager', 'district_manager']
 
         if work_schedules_data is not None:
             if instance.role in SCHEDULE_ROLES:

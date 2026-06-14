@@ -69,3 +69,15 @@ class IsDistrictManager(BasePermission):
             and request.user.is_authenticated
             and request.user.role == 'district_manager'
         )
+
+
+class IsSuperAdminOrDistrictManager(BasePermission):
+    """Allow access to super_admin and district_manager roles."""
+    message = "Access denied. Super Admin or District Manager only."
+
+    def has_permission(self, request, view):
+        return (
+            request.user
+            and request.user.is_authenticated
+            and request.user.role in ['super_admin', 'district_manager']
+        )

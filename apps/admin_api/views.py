@@ -24,7 +24,7 @@ from .models import (
     SplashScreen, UserWorkSchedule, Task,
     Instruction, ActivityLog, Notification
 )
-from .permissions import IsBranchManager, IsSuperAdmin, IsClockInUser
+from .permissions import IsBranchManager, IsSuperAdmin, IsClockInUser, IsSuperAdminOrDistrictManager
 from .serializers import (
     AdminChangePasswordSerializer,
     AdminProfileSerializer,
@@ -261,7 +261,7 @@ class LocationViewSet(viewsets.ModelViewSet):
 # ================================================================
 
 class UserViewSet(viewsets.ModelViewSet):
-    permission_classes = [IsSuperAdmin]
+    permission_classes = [IsSuperAdminOrDistrictManager]
     filter_backends    = [SearchFilter]
     search_fields      = ['first_name', 'last_name', 'username', 'email', 'role']
 
@@ -713,7 +713,7 @@ class TaskViewSet(viewsets.ModelViewSet):
 # ================================================================
 
 class LocationEmployeesView(APIView):
-    permission_classes = [IsSuperAdmin]
+    permission_classes = [IsSuperAdminOrDistrictManager]
 
     def get(self, request, pk):
         try:
@@ -742,7 +742,7 @@ class LocationEmployeesView(APIView):
 # ================================================================
 
 class InstructionViewSet(viewsets.ModelViewSet):
-    permission_classes = [IsSuperAdmin]
+    permission_classes = [IsSuperAdminOrDistrictManager]
     filter_backends    = [SearchFilter]
     search_fields      = ['title', 'description']
     parser_classes     = [MultiPartParser, FormParser, JSONParser]
@@ -1637,7 +1637,7 @@ def deactivate_old_qr_sessions(location):
 # ================================================================
 
 class SuperAdminQRView(APIView):
-    permission_classes = [IsSuperAdmin]
+    permission_classes = [IsSuperAdminOrDistrictManager]
 
     def get(self, request):
         location_filter = request.query_params.get('location')
@@ -1749,7 +1749,7 @@ class SuperAdminQRView(APIView):
 
 
 class SuperAdminQRDetailView(APIView):
-    permission_classes = [IsSuperAdmin]
+    permission_classes = [IsSuperAdminOrDistrictManager]
 
     def get(self, request, pk):
         qr_session = QRSession.objects.filter(pk=pk).annotate(
@@ -1775,7 +1775,7 @@ class SuperAdminQRDetailView(APIView):
 
 
 class SuperAdminQRIntervalListView(APIView):
-    permission_classes = [IsSuperAdmin]
+    permission_classes = [IsSuperAdminOrDistrictManager]
 
     def get(self, request):
         intervals = [
@@ -2814,7 +2814,7 @@ class UserAttendanceView(APIView):
 # ================================================================
 
 class NotificationViewSet(viewsets.ModelViewSet):
-    permission_classes = [IsSuperAdmin]
+    permission_classes = [IsSuperAdminOrDistrictManager]
     http_method_names  = ['get', 'post', 'delete']
 
     def get_queryset(self):

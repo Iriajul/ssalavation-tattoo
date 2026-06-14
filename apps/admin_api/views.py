@@ -25,6 +25,7 @@ from .models import (
     Instruction, ActivityLog, Notification
 )
 from .permissions import IsBranchManager, IsSuperAdmin, IsClockInUser, IsSuperAdminOrDistrictManager
+from .utils import check_file_size
 from .serializers import (
     AdminChangePasswordSerializer,
     AdminProfileSerializer,
@@ -824,6 +825,9 @@ class InstructionViewSet(viewsets.ModelViewSet):
             'role_visibility': role_visibility,
         }
         if 'pdf_file' in request.FILES:
+            err = check_file_size(request.FILES['pdf_file'])
+            if err:
+                return err
             data['pdf_file'] = request.FILES['pdf_file']
 
         serializer = InstructionSerializer(data=data)
@@ -846,6 +850,9 @@ class InstructionViewSet(viewsets.ModelViewSet):
         if role_visibility:
             data['role_visibility'] = role_visibility
         if 'pdf_file' in request.FILES:
+            err = check_file_size(request.FILES['pdf_file'])
+            if err:
+                return err
             data['pdf_file'] = request.FILES['pdf_file']
 
         serializer = InstructionSerializer(instruction, data=data, partial=True)
@@ -889,6 +896,9 @@ class SplashScreenView(APIView):
             return Response({"error": "No image provided."}, status=status.HTTP_400_BAD_REQUEST)
         if image_type not in ['web', 'app']:
             return Response({"error": "type must be 'web' or 'app'"}, status=status.HTTP_400_BAD_REQUEST)
+        err = check_file_size(image)
+        if err:
+            return err
 
         result = cloudinary.uploader.upload(image, folder="splash_screen")
         obj, _ = SplashScreen.objects.get_or_create(id=1)
@@ -954,6 +964,9 @@ class AdminProfileView(APIView):
         # Update profile photo if provided (optional)
         photo = request.FILES.get('profile_photo')
         if photo:
+            err = check_file_size(photo)
+            if err:
+                return err
             import cloudinary.uploader
             result = cloudinary.uploader.upload(photo, folder="profile_photos")
             user.profile_photo = result['secure_url']
@@ -1877,6 +1890,9 @@ class BranchManagerProfileView(APIView):
         photo   = request.FILES.get('profile_photo')
 
         if photo:
+            err = check_file_size(photo)
+            if err:
+                return err
             import cloudinary.uploader
             result = cloudinary.uploader.upload(photo, folder="profile_photos")
             manager.profile_photo = result['secure_url']

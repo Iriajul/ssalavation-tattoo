@@ -13,7 +13,8 @@ from rest_framework_simplejwt.tokens import RefreshToken, UntypedToken
 from rest_framework_simplejwt.exceptions import InvalidToken
 from rest_framework.decorators import action
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
-from apps.admin_api.models import Attendance, Instruction, QRSession, Task, UserWorkSchedule, ActivityLog   
+from apps.admin_api.models import Attendance, Instruction, QRSession, Task, UserWorkSchedule, ActivityLog
+from apps.admin_api.utils import check_file_size
 from .models import AppNotification
 
 from .serializers import (
@@ -503,6 +504,9 @@ class AppTaskViewSet(viewsets.ReadOnlyModelViewSet):
                     {"error": "A photo is required to complete this task."},
                     status=status.HTTP_400_BAD_REQUEST
                 )
+            err = check_file_size(photo)
+            if err:
+                return err
             # ── Upload to Cloudinary ──────────────────────────────
             import cloudinary.uploader
             result        = cloudinary.uploader.upload(
@@ -787,6 +791,9 @@ class AppProfilePhotoView(APIView):
                 {'error': 'No photo provided.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
+        err = check_file_size(photo)
+        if err:
+            return err
 
         import cloudinary.uploader
         result = cloudinary.uploader.upload(

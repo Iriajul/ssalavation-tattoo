@@ -9,7 +9,8 @@ from django.utils import timezone
 from datetime import datetime, time, timedelta, date
 from .models import Location, Task, Attendance, UserWorkSchedule
 from apps.users.models import AppNotification
-from .permissions import IsDistrictManager         
+from .permissions import IsDistrictManager
+from .utils import check_file_size
 from .serializers import (
     TaskDetailSerializer,
     TaskCreateSerializer,
@@ -59,6 +60,9 @@ class DistrictManagerProfileView(APIView):
         manager = request.user
         photo = request.FILES.get('profile_photo')
         if photo:
+            err = check_file_size(photo)
+            if err:
+                return err
             import cloudinary.uploader
             result = cloudinary.uploader.upload(photo, folder="profile_photos")
             manager.profile_photo = result['secure_url']

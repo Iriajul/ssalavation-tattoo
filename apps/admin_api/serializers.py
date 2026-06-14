@@ -351,20 +351,18 @@ class TaskUserSerializer(serializers.ModelSerializer):
  
 class TaskListSerializer(serializers.ModelSerializer):
     """Lightweight serializer for task list table"""
-    assigned_to_name     = serializers.SerializerMethodField()
-    assigned_to_email = serializers.CharField(source='assigned_to.email', read_only=True)
-    assigned_to_role     = serializers.CharField(source='assigned_to.get_role_display', read_only=True)
-    completed_by_name    = serializers.SerializerMethodField()
-    completed_by_role    = serializers.SerializerMethodField()
-    location_name        = serializers.CharField(source='location.name', read_only=True)
-    can_fire = serializers.SerializerMethodField()
- 
+    assigned_to       = serializers.SerializerMethodField()
+    completed_by_name = serializers.SerializerMethodField()
+    completed_by_role = serializers.SerializerMethodField()
+    location_name     = serializers.CharField(source='location.name', read_only=True)
+    can_fire          = serializers.SerializerMethodField()
+
     class Meta:
         model  = Task
         fields = [
             'id', 'title', 'description',
             'location', 'location_name',
-            'assigned_to', 'assigned_to_name', 'assigned_to_email','assigned_to_role',
+            'assigned_to',
             'due_date', 'status',
             'is_recurring', 'frequency',
             'requires_photo',
@@ -373,19 +371,24 @@ class TaskListSerializer(serializers.ModelSerializer):
             'can_fire',
             'created_at',
         ]
- 
-    def get_assigned_to_name(self, obj):
-        return f"{obj.assigned_to.first_name} {obj.assigned_to.last_name}".strip()
-    
+
+    def get_assigned_to(self, obj):
+        return [{
+            'id':           obj.assigned_to.id,
+            'name':         f"{obj.assigned_to.first_name} {obj.assigned_to.last_name}".strip(),
+            'email':        obj.assigned_to.email,
+            'role':         obj.assigned_to.role,
+            'role_display': obj.assigned_to.get_role_display(),
+        }]
+
     def get_can_fire(self, obj):
-        # Show fire button only if task is overdue and user not already fired
         return obj.status == 'overdue' and not obj.is_fired
- 
+
     def get_completed_by_name(self, obj):
         if obj.completed_by:
             return f"{obj.completed_by.first_name} {obj.completed_by.last_name}".strip()
         return None
- 
+
     def get_completed_by_role(self, obj):
         if obj.completed_by:
             return obj.completed_by.get_role_display()
@@ -394,17 +397,15 @@ class TaskListSerializer(serializers.ModelSerializer):
  
 class TaskDetailSerializer(serializers.ModelSerializer):
     """Full task detail with all relations"""
-    assigned_to   = TaskUserSerializer(read_only=True)
+    assigned_to   = serializers.SerializerMethodField()
     completed_by  = TaskUserSerializer(read_only=True)
     approved_by   = TaskUserSerializer(read_only=True)
     rejected_by   = TaskUserSerializer(read_only=True)
     created_by    = TaskUserSerializer(read_only=True)
     location_name = serializers.CharField(source='location.name', read_only=True)
-    can_fire = serializers.SerializerMethodField()
- 
-    # ── Human readable status label ───────────────────────────
+    can_fire       = serializers.SerializerMethodField()
     status_display = serializers.SerializerMethodField()
- 
+
     class Meta:
         model  = Task
         fields = [
@@ -422,17 +423,26 @@ class TaskDetailSerializer(serializers.ModelSerializer):
             'created_at',   'updated_at',
         ]
 
-    def get_can_fire(self, obj): 
-        return obj.status == 'overdue' and not obj.is_fired   
- 
+    def get_assigned_to(self, obj):
+        return [{
+            'id':           obj.assigned_to.id,
+            'name':         f"{obj.assigned_to.first_name} {obj.assigned_to.last_name}".strip(),
+            'email':        obj.assigned_to.email,
+            'role':         obj.assigned_to.role,
+            'role_display': obj.assigned_to.get_role_display(),
+        }]
+
+    def get_can_fire(self, obj):
+        return obj.status == 'overdue' and not obj.is_fired
+
     def get_status_display(self, obj):
         status_labels = {
-            'pending':        'Pending',
-            'completed':      'Completed',
+            'pending':         'Pending',
+            'completed':       'Completed',
             'awaiting_review': 'Awaiting Review',
-            'approved':       'Approved',
-            'rejected':       'Rejected',
-            'overdue':        'Overdue',
+            'approved':        'Approved',
+            'rejected':        'Rejected',
+            'overdue':         'Overdue',
         }
         return status_labels.get(obj.status, obj.status)
  

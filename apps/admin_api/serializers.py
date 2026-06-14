@@ -373,7 +373,7 @@ class TaskListSerializer(serializers.ModelSerializer):
         ]
 
     def get_assigned_to(self, obj):
-        return [obj.assigned_to.id]
+        return list(obj.assigned_to.values_list('id', flat=True))
 
     def get_can_fire(self, obj):
         return obj.status == 'overdue' and not obj.is_fired
@@ -418,7 +418,7 @@ class TaskDetailSerializer(serializers.ModelSerializer):
         ]
 
     def get_assigned_to(self, obj):
-        return [obj.assigned_to.id]
+        return list(obj.assigned_to.values_list('id', flat=True))
 
     def get_can_fire(self, obj):
         return obj.status == 'overdue' and not obj.is_fired
@@ -436,6 +436,11 @@ class TaskDetailSerializer(serializers.ModelSerializer):
  
  
 class TaskCreateSerializer(serializers.ModelSerializer):
+    assigned_to = serializers.PrimaryKeyRelatedField(
+        many=True,
+        queryset=User.objects.filter(is_active=True),
+    )
+
     class Meta:
         model  = Task
         fields = [
@@ -452,42 +457,57 @@ class TaskCreateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 f"Due date cannot be in the past. Today is {today}."
             )
-        return value    
- 
-    def validate_assigned_to(self, value):
-        if value.role not in ASSIGNABLE_ROLES:
-            raise serializers.ValidationError(
-                "Tasks can only be assigned to Tattoo Artists, Body Piercers, or Staff."
-            )
-        if not value.is_active:
-            raise serializers.ValidationError("Cannot assign task to an inactive user.")
         return value
- 
+
+    def validate_assigned_to(self, users):
+        for user in users:
+            if user.role not in ASSIGNABLE_ROLES:
+                raise serializers.ValidationError(
+                    f"{user.get_full_name()} is not a Tattoo Artist, Body Piercer, or Staff."
+                )
+            if not user.is_active:
+                raise serializers.ValidationError(
+                    f"{user.get_full_name()} is inactive."
+                )
+        return users
+
     def validate(self, data):
-        assigned_to = data.get('assigned_to')
-        location    = data.get('location')
- 
-        if assigned_to and location:
-            if assigned_to.location != location:
-                raise serializers.ValidationError({
-                    "assigned_to": "This user does not belong to the selected location."
-                })
- 
+        users    = data.get('assigned_to', [])
+        location = data.get('location')
+
+        if users and location:
+            for user in users:
+                if user.location != location:
+                    raise serializers.ValidationError({
+                        "assigned_to": f"{user.get_full_name()} does not belong to the selected location."
+                    })
+
         is_recurring = data.get('is_recurring', False)
         frequency    = data.get('frequency', 'none')
- 
+
         if is_recurring and frequency == 'none':
             raise serializers.ValidationError({
                 "frequency": "Please select a frequency for the recurring task."
             })
- 
         if not is_recurring:
             data['frequency'] = 'none'
- 
+
         return data
+
+    def create(self, validated_data):
+        users = validated_data.pop('assigned_to')
+        task  = Task.objects.create(**validated_data)
+        task.assigned_to.set(users)
+        return task
  
  
 class TaskUpdateSerializer(serializers.ModelSerializer):
+    assigned_to = serializers.PrimaryKeyRelatedField(
+        many=True,
+        queryset=User.objects.filter(is_active=True),
+        required=False,
+    )
+
     class Meta:
         model  = Task
         fields = [
@@ -506,27 +526,29 @@ class TaskUpdateSerializer(serializers.ModelSerializer):
             )
         return value
 
-    def validate_assigned_to(self, value):
-        if value.role not in ASSIGNABLE_ROLES:
-            raise serializers.ValidationError(
-                "Tasks can only be assigned to Tattoo Artists, Body Piercers, or Staff."
-            )
-        if not value.is_active:
-            raise serializers.ValidationError("Cannot assign task to an inactive user.")
-        return value
+    def validate_assigned_to(self, users):
+        for user in users:
+            if user.role not in ASSIGNABLE_ROLES:
+                raise serializers.ValidationError(
+                    f"{user.get_full_name()} is not a Tattoo Artist, Body Piercer, or Staff."
+                )
+            if not user.is_active:
+                raise serializers.ValidationError(f"{user.get_full_name()} is inactive.")
+        return users
 
     def validate(self, data):
-        assigned_to = data.get('assigned_to', getattr(self.instance, 'assigned_to', None))
-        location    = data.get('location',    getattr(self.instance, 'location', None))
+        users    = data.get('assigned_to', list(self.instance.assigned_to.all()))
+        location = data.get('location', self.instance.location)
 
-        if assigned_to and location:
-            if assigned_to.location != location:
-                raise serializers.ValidationError({
-                    "assigned_to": "This user does not belong to the selected location."
-                })
+        if users and location:
+            for user in users:
+                if user.location != location:
+                    raise serializers.ValidationError({
+                        "assigned_to": f"{user.get_full_name()} does not belong to the selected location."
+                    })
 
-        is_recurring = data.get('is_recurring', getattr(self.instance, 'is_recurring', False))
-        frequency    = data.get('frequency',    getattr(self.instance, 'frequency', 'none'))
+        is_recurring = data.get('is_recurring', self.instance.is_recurring)
+        frequency    = data.get('frequency',    self.instance.frequency)
 
         if is_recurring and frequency == 'none':
             raise serializers.ValidationError({
@@ -536,7 +558,16 @@ class TaskUpdateSerializer(serializers.ModelSerializer):
             data['frequency'] = 'none'
 
         return data
- 
+
+    def update(self, instance, validated_data):
+        users = validated_data.pop('assigned_to', None)
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+        if users is not None:
+            instance.assigned_to.set(users)
+        return instance
+
 class TaskApproveSerializer(serializers.Serializer):
     pass
  
@@ -803,6 +834,11 @@ class BranchManagerDashboardSerializer(serializers.Serializer):
     
 
 class BranchManagerTaskCreateSerializer(serializers.ModelSerializer):
+    assigned_to = serializers.PrimaryKeyRelatedField(
+        many=True,
+        queryset=User.objects.filter(is_active=True),
+    )
+
     class Meta:
         model  = Task
         fields = [
@@ -811,18 +847,16 @@ class BranchManagerTaskCreateSerializer(serializers.ModelSerializer):
             'is_recurring', 'frequency',
             'requires_photo',
         ]
-        # No location field — set automatically from manager's location
 
-    def validate_assigned_to(self, value):
-        if value.role not in ASSIGNABLE_ROLES:
-            raise serializers.ValidationError(
-                "Tasks can only be assigned to Tattoo Artists, Body Piercers, or Staff."
-            )
-        if not value.is_active:
-            raise serializers.ValidationError(
-                "Cannot assign task to an inactive user."
-            )
-        return value
+    def validate_assigned_to(self, users):
+        for user in users:
+            if user.role not in ASSIGNABLE_ROLES:
+                raise serializers.ValidationError(
+                    f"{user.get_full_name()} is not a Tattoo Artist, Body Piercer, or Staff."
+                )
+            if not user.is_active:
+                raise serializers.ValidationError(f"{user.get_full_name()} is inactive.")
+        return users
 
     def validate(self, data):
         is_recurring = data.get('is_recurring', False)
@@ -836,6 +870,12 @@ class BranchManagerTaskCreateSerializer(serializers.ModelSerializer):
             data['frequency'] = 'none'
 
         return data
+
+    def create(self, validated_data):
+        users = validated_data.pop('assigned_to')
+        task  = Task.objects.create(**validated_data)
+        task.assigned_to.set(users)
+        return task
     
 class BranchManagerTaskListSerializer(serializers.ModelSerializer):
     assigned_to_name = serializers.SerializerMethodField()

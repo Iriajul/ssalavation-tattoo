@@ -129,10 +129,10 @@ class Task(models.Model):
         on_delete=models.CASCADE,
         related_name='tasks'
     )
-    assigned_to = models.ForeignKey(
+    assigned_to = models.ManyToManyField(
         settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
-        related_name='assigned_tasks'
+        related_name='assigned_tasks',
+        blank=True,
     )
     created_by  = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -197,18 +197,16 @@ class Task(models.Model):
             ),
         ]
         indexes = [
-            models.Index(fields=['status'],                name='task_status_idx'),
-            models.Index(fields=['location'],              name='task_location_idx'),
-            models.Index(fields=['assigned_to'],           name='task_assigned_to_idx'),
-            models.Index(fields=['created_at'],            name='task_created_at_idx'),
-            models.Index(fields=['due_date'],              name='task_due_date_idx'),
-            models.Index(fields=['location', 'status'],    name='task_location_status_idx'),
-            models.Index(fields=['status', 'created_at'],  name='task_status_created_idx'),
-            models.Index(fields=['assigned_to', 'status'], name='task_assigned_status_idx'),
+            models.Index(fields=['status'],               name='task_status_idx'),
+            models.Index(fields=['location'],             name='task_location_idx'),
+            models.Index(fields=['created_at'],           name='task_created_at_idx'),
+            models.Index(fields=['due_date'],             name='task_due_date_idx'),
+            models.Index(fields=['location', 'status'],   name='task_location_status_idx'),
+            models.Index(fields=['status', 'created_at'], name='task_status_created_idx'),
         ]
 
     def __str__(self):
-        return f"{self.title} → {self.assigned_to.email}"
+        return self.title
 
 
 # ================================================================

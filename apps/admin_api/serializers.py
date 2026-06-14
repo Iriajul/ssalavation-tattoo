@@ -373,13 +373,7 @@ class TaskListSerializer(serializers.ModelSerializer):
         ]
 
     def get_assigned_to(self, obj):
-        return [{
-            'id':           obj.assigned_to.id,
-            'name':         f"{obj.assigned_to.first_name} {obj.assigned_to.last_name}".strip(),
-            'email':        obj.assigned_to.email,
-            'role':         obj.assigned_to.role,
-            'role_display': obj.assigned_to.get_role_display(),
-        }]
+        return [obj.assigned_to.id]
 
     def get_can_fire(self, obj):
         return obj.status == 'overdue' and not obj.is_fired
@@ -424,13 +418,7 @@ class TaskDetailSerializer(serializers.ModelSerializer):
         ]
 
     def get_assigned_to(self, obj):
-        return [{
-            'id':           obj.assigned_to.id,
-            'name':         f"{obj.assigned_to.first_name} {obj.assigned_to.last_name}".strip(),
-            'email':        obj.assigned_to.email,
-            'role':         obj.assigned_to.role,
-            'role_display': obj.assigned_to.get_role_display(),
-        }]
+        return [obj.assigned_to.id]
 
     def get_can_fire(self, obj):
         return obj.status == 'overdue' and not obj.is_fired

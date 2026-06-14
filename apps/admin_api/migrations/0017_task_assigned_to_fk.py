@@ -43,6 +43,8 @@ def m2m_to_fk(apps, schema_editor):
 
 class Migration(migrations.Migration):
 
+    atomic = False  # prevents "pending trigger events" error on PostgreSQL
+
     dependencies = [
         ('admin_api', '0016_task_assigned_to_m2m'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
@@ -77,15 +79,20 @@ class Migration(migrations.Migration):
             new_name='assigned_to',
         ),
 
-        # 5. Update related_name to match model
-        migrations.AlterField(
-            model_name='task',
-            name='assigned_to',
-            field=models.ForeignKey(
-                null=True, blank=True,
-                on_delete=django.db.models.deletion.CASCADE,
-                related_name='assigned_tasks',
-                to=settings.AUTH_USER_MODEL,
-            ),
+        # 5. related_name is ORM-only — no DB change needed
+        migrations.SeparateDatabaseAndState(
+            database_operations=[],
+            state_operations=[
+                migrations.AlterField(
+                    model_name='task',
+                    name='assigned_to',
+                    field=models.ForeignKey(
+                        null=True, blank=True,
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name='assigned_tasks',
+                        to=settings.AUTH_USER_MODEL,
+                    ),
+                ),
+            ],
         ),
     ]

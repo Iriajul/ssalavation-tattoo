@@ -428,8 +428,8 @@ class TaskViewSet(viewsets.ModelViewSet):
     ]
 
     def get_queryset(self):
-        queryset = Task.objects.prefetch_related('assigned_to').select_related(
-            'location', 'completed_by',
+        queryset = Task.objects.select_related(
+            'assigned_to', 'location', 'completed_by',
             'approved_by', 'rejected_by', 'created_by'
         ).order_by('-created_at')
 
@@ -494,29 +494,36 @@ class TaskViewSet(viewsets.ModelViewSet):
         return Response(response_data, status=status.HTTP_200_OK)
 
     def create(self, request, *args, **kwargs):
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        task = serializer.save(created_by=request.user)
+        raw = request.data.get('assigned_to')
+        emp_ids = raw if isinstance(raw, list) else [raw]
 
-        for emp in task.assigned_to.all():
+        created_tasks = []
+        for emp_id in emp_ids:
+            data       = {**request.data, 'assigned_to': emp_id}
+            serializer = self.get_serializer(data=data)
+            serializer.is_valid(raise_exception=True)
+            task = serializer.save(created_by=request.user)
             ActivityLog.objects.create(
-                action      = 'task_assigned',
-                actor       = request.user,
-                task        = task,
-                target_user = emp,
-                message     = f'Task "{task.title}" assigned to {emp.get_full_name()}'
+                action='task_assigned', actor=request.user, task=task,
+                target_user=task.assigned_to,
+                message=f'Task "{task.title}" assigned to {task.assigned_to.get_full_name()}'
             )
             AppNotification.objects.create(
-                recipient  = emp,
-                notif_type = 'task_assigned',
-                title      = 'New Task Assigned',
-                message    = f"{request.user.get_full_name() or 'Admin'} assigned you '{task.title}'",
-                task       = task,
+                recipient=task.assigned_to, notif_type='task_assigned',
+                title='New Task Assigned',
+                message=f"{request.user.get_full_name() or 'Admin'} assigned you '{task.title}'",
+                task=task,
             )
+            created_tasks.append(task)
 
+        if len(created_tasks) == 1:
+            return Response({
+                'message': 'Task created successfully.',
+                'task':    TaskDetailSerializer(created_tasks[0]).data,
+            }, status=status.HTTP_201_CREATED)
         return Response({
-            'message': 'Task created successfully.',
-            'task':    TaskDetailSerializer(task).data,
+            'message': f'{len(created_tasks)} tasks created successfully.',
+            'tasks':   TaskDetailSerializer(created_tasks, many=True).data,
         }, status=status.HTTP_201_CREATED)
 
     def retrieve(self, request, *args, **kwargs):
@@ -569,20 +576,16 @@ class TaskViewSet(viewsets.ModelViewSet):
         task.rejection_reason = None
         task.save(update_fields=['status', 'approved_by', 'approved_at', 'rejection_reason'])
 
-        for emp in task.assigned_to.all():
+        emp = task.assigned_to
+        if emp:
             ActivityLog.objects.create(
-                action      = 'task_approved',
-                actor       = request.user,
-                task        = task,
-                target_user = emp,
-                message     = f'Task "{task.title}" approved for {emp.get_full_name()}'
+                action='task_approved', actor=request.user, task=task,
+                target_user=emp, message=f'Task "{task.title}" approved for {emp.get_full_name()}'
             )
             AppNotification.objects.create(
-                recipient  = emp,
-                notif_type = 'task_approved',
-                title      = 'Task Approved',
-                message    = f"Your '{task.title}' was approved by {request.user.get_full_name() or 'Admin'}",
-                task       = task,
+                recipient=emp, notif_type='task_approved', title='Task Approved',
+                message=f"Your '{task.title}' was approved by {request.user.get_full_name() or 'Admin'}",
+                task=task,
             )
 
         return Response({
@@ -608,20 +611,17 @@ class TaskViewSet(viewsets.ModelViewSet):
         task.rejection_reason = serializer.validated_data['rejection_reason']
         task.save(update_fields=['status', 'rejected_by', 'rejected_at', 'rejection_reason'])
 
-        for emp in task.assigned_to.all():
+        emp = task.assigned_to
+        if emp:
             ActivityLog.objects.create(
-                action      = 'task_rejected',
-                actor       = request.user,
-                task        = task,
-                target_user = emp,
-                message     = f'Task "{task.title}" rejected — {serializer.validated_data["rejection_reason"]}'
+                action='task_rejected', actor=request.user, task=task,
+                target_user=emp,
+                message=f'Task "{task.title}" rejected — {serializer.validated_data["rejection_reason"]}'
             )
             AppNotification.objects.create(
-                recipient  = emp,
-                notif_type = 'task_rejected',
-                title      = 'Task Needs Revision',
-                message    = f"'{task.title}' was rejected. {serializer.validated_data['rejection_reason']}",
-                task       = task,
+                recipient=emp, notif_type='task_rejected', title='Task Needs Revision',
+                message=f"'{task.title}' was rejected. {serializer.validated_data['rejection_reason']}",
+                task=task,
             )
 
         return Response({
@@ -637,7 +637,7 @@ class TaskViewSet(viewsets.ModelViewSet):
                 {"error": "This task is not overdue."},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        user = task.assigned_to.first()
+        user = task.assigned_to
         return Response({
             'task_id':       task.id,
             'task_title':    task.title,
@@ -667,7 +667,7 @@ class TaskViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
 
         fire_reason = serializer.validated_data['fire_reason']
-        user        = task.assigned_to.first()
+        user        = task.assigned_to
 
         task.is_fired = True
         task.save(update_fields=['is_fired'])
@@ -1056,8 +1056,8 @@ class PerformanceAnalyticsView(APIView):
 
         task_bulk_qs = (
             Task.objects
-            .filter(assigned_to__id__in=emp_ids, created_at__gte=start_date)
-            .values('assigned_to__id')
+            .filter(assigned_to_id__in=emp_ids, created_at__gte=start_date)
+            .values('assigned_to_id')
             .annotate(
                 total     = Count('id'),
                 completed = Count(Case(
@@ -1070,7 +1070,7 @@ class PerformanceAnalyticsView(APIView):
                 )),
             )
         )
-        task_bulk_map = {row['assigned_to__id']: row for row in task_bulk_qs}
+        task_bulk_map = {row['assigned_to_id']: row for row in task_bulk_qs}
 
         rankings = []
         for employee in employees_with_attendance:
@@ -1185,7 +1185,7 @@ class ReportsAnalyticsView(APIView):
         if location_filter:
             tasks = tasks.filter(location_id=location_filter)
         if user_filter:
-            tasks = tasks.filter(assigned_to__id=user_filter)
+            tasks = tasks.filter(assigned_to_id=user_filter)
 
         # ── Top stats ─────────────────────────────────────────────
         task_stats = tasks.aggregate(
@@ -2023,7 +2023,7 @@ class BranchManagerDashboardView(APIView):
                 'clock_in':     attendance.clock_in.strftime('%I:%M %p') if attendance and attendance.clock_in else None,
             })
 
-        recent_tasks_qs = Task.objects.filter(location=location).prefetch_related('assigned_to').order_by('-created_at')[:5]
+        recent_tasks_qs = Task.objects.filter(location=location).select_related('assigned_to').order_by('-created_at')[:5]
         recent_tasks    = []
         status_labels   = {
             'pending': 'Pending', 'completed': 'Completed',
@@ -2031,8 +2031,8 @@ class BranchManagerDashboardView(APIView):
             'rejected': 'Rejected', 'overdue': 'Overdue',
         }
         for task in recent_tasks_qs:
-            assignees = task.assigned_to.all()
-            assigned_names = ', '.join(f"{u.first_name} {u.last_name}".strip() for u in assignees) or 'Unassigned'
+            u = task.assigned_to
+            assigned_names = f"{u.first_name} {u.last_name}".strip() if u else 'Unassigned'
             recent_tasks.append({
                 'id':             task.id,
                 'title':          task.title,
@@ -2164,11 +2164,11 @@ class BranchManagerReportsView(APIView):
         task_bulk_qs = (
             Task.objects
             .filter(
-                assigned_to__id__in=emp_ids,
+                assigned_to_id__in=emp_ids,
                 location=location,
                 created_at__gte=start_date,
             )
-            .values('assigned_to__id')
+            .values('assigned_to_id')
             .annotate(
                 completed=Count(Case(
                     When(status__in=['completed', 'approved'], then=1),
@@ -2181,7 +2181,7 @@ class BranchManagerReportsView(APIView):
             )
         )
 
-        task_bulk_map = {r['assigned_to__id']: r for r in task_bulk_qs}
+        task_bulk_map = {r['assigned_to_id']: r for r in task_bulk_qs}
 
         # ───────────────────── BULK ATTENDANCE ────────────────────
         att_bulk_qs = (
@@ -2246,7 +2246,7 @@ class BranchManagerReportsView(APIView):
         task_log_qs = Task.objects.filter(
             location=location,
             created_at__gte=start_date,
-        ).prefetch_related('assigned_to').select_related('created_by').order_by('-created_at', '-id')
+        ).select_related('assigned_to', 'created_by').order_by('-created_at', '-id')
 
         if status_filter and status_filter != 'all':
             task_log_qs = task_log_qs.filter(status=status_filter)
@@ -2272,7 +2272,7 @@ class BranchManagerReportsView(APIView):
             {
                 'id': t.id,
                 'title': t.title,
-                'assigned_to': ', '.join(f"{u.first_name} {u.last_name}".strip() for u in t.assigned_to.all()) or 'Unassigned',
+                'assigned_to': f"{t.assigned_to.first_name} {t.assigned_to.last_name}".strip() if t.assigned_to else 'Unassigned',
                 'assigned_by': role_map.get(t.created_by.role, 'Super Admin') if t.created_by else 'Super Admin',
                 'due_date': t.due_date,
                 'status': t.status,
@@ -2466,10 +2466,8 @@ class BranchManagerTaskViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         manager  = self.request.user
-        queryset = Task.objects.filter(location=manager.location).prefetch_related(
-            'assigned_to'
-        ).select_related(
-            'location', 'completed_by', 'approved_by', 'rejected_by', 'created_by'
+        queryset = Task.objects.filter(location=manager.location).select_related(
+            'assigned_to', 'location', 'completed_by', 'approved_by', 'rejected_by', 'created_by'
         ).order_by('-created_at')
 
         search = self.request.query_params.get('search')
@@ -2515,35 +2513,42 @@ class BranchManagerTaskViewSet(viewsets.ModelViewSet):
         if not manager.location:
             return Response({"error": "You are not assigned to any location."}, status=status.HTTP_400_BAD_REQUEST)
 
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+        raw     = request.data.get('assigned_to')
+        emp_ids = raw if isinstance(raw, list) else [raw]
 
-        for emp in serializer.validated_data.get('assigned_to', []):
+        created_tasks = []
+        for emp_id in emp_ids:
+            data       = {**request.data, 'assigned_to': emp_id}
+            serializer = self.get_serializer(data=data)
+            serializer.is_valid(raise_exception=True)
+            emp = serializer.validated_data.get('assigned_to')
             if emp.location != manager.location:
                 return Response(
                     {"error": f"Employee {emp.get_full_name()} does not belong to your location."},
                     status=status.HTTP_400_BAD_REQUEST
                 )
-
-        task = serializer.save(location=manager.location, created_by=request.user)
-
-        for emp in task.assigned_to.all():
+            task = serializer.save(location=manager.location, created_by=request.user)
             ActivityLog.objects.create(
                 action='task_assigned', actor=request.user, task=task,
-                target_user=emp,
-                message=f'Task "{task.title}" assigned to {emp.get_full_name()}'
+                target_user=task.assigned_to,
+                message=f'Task "{task.title}" assigned to {task.assigned_to.get_full_name()}'
             )
             AppNotification.objects.create(
-                recipient  = emp,
-                notif_type = 'task_assigned',
-                title      = 'New Task Assigned',
-                message    = f"{request.user.get_full_name() or 'Manager'} assigned you '{task.title}'",
-                task       = task,
+                recipient=task.assigned_to, notif_type='task_assigned',
+                title='New Task Assigned',
+                message=f"{request.user.get_full_name() or 'Manager'} assigned you '{task.title}'",
+                task=task,
             )
+            created_tasks.append(task)
 
+        if len(created_tasks) == 1:
+            return Response({
+                'message': 'Task created successfully.',
+                'task':    TaskDetailSerializer(created_tasks[0]).data,
+            }, status=status.HTTP_201_CREATED)
         return Response({
-            'message': 'Task created successfully.',
-            'task':    TaskDetailSerializer(task).data,
+            'message': f'{len(created_tasks)} tasks created successfully.',
+            'tasks':   TaskDetailSerializer(created_tasks, many=True).data,
         }, status=status.HTTP_201_CREATED)
 
     def retrieve(self, request, *args, **kwargs):
@@ -2579,14 +2584,13 @@ class BranchManagerTaskViewSet(viewsets.ModelViewSet):
 
         task.status = 'approved'; task.approved_by = request.user; task.approved_at = timezone.now(); task.rejection_reason = None
         task.save(update_fields=['status', 'approved_by', 'approved_at', 'rejection_reason'])
-        for emp in task.assigned_to.all():
+        emp = task.assigned_to
+        if emp:
             ActivityLog.objects.create(action='task_approved', actor=request.user, task=task, target_user=emp, message=f'Task "{task.title}" approved for {emp.get_full_name()}')
             AppNotification.objects.create(
-                recipient  = emp,
-                notif_type = 'task_approved',
-                title      = 'Task Approved',
-                message    = f"Your '{task.title}' was approved by {request.user.get_full_name() or 'Manager'}",
-                task       = task,
+                recipient=emp, notif_type='task_approved', title='Task Approved',
+                message=f"Your '{task.title}' was approved by {request.user.get_full_name() or 'Manager'}",
+                task=task,
             )
         return Response({'message': 'Task approved successfully.', 'task': TaskDetailSerializer(task).data}, status=status.HTTP_200_OK)
 
@@ -2600,14 +2604,13 @@ class BranchManagerTaskViewSet(viewsets.ModelViewSet):
 
         task.status = 'rejected'; task.rejected_by = request.user; task.rejected_at = timezone.now(); task.rejection_reason = serializer.validated_data['rejection_reason']
         task.save(update_fields=['status', 'rejected_by', 'rejected_at', 'rejection_reason'])
-        for emp in task.assigned_to.all():
+        emp = task.assigned_to
+        if emp:
             ActivityLog.objects.create(action='task_rejected', actor=request.user, task=task, target_user=emp, message=f'Task "{task.title}" rejected — {serializer.validated_data["rejection_reason"]}')
             AppNotification.objects.create(
-                recipient  = emp,
-                notif_type = 'task_rejected',
-                title      = 'Task Needs Revision',
-                message    = f"'{task.title}' was rejected. {serializer.validated_data['rejection_reason']}",
-                task       = task,
+                recipient=emp, notif_type='task_rejected', title='Task Needs Revision',
+                message=f"'{task.title}' was rejected. {serializer.validated_data['rejection_reason']}",
+                task=task,
             )
         return Response({'message': 'Task rejected.', 'task': TaskDetailSerializer(task).data}, status=status.HTTP_200_OK)
 
@@ -2639,10 +2642,8 @@ class BranchManagerVerificationView(APIView):
 
         tab = request.query_params.get('tab', 'pending')
 
-        base_tasks = Task.objects.filter(location=manager.location).prefetch_related(
-            'assigned_to'
-        ).select_related(
-            'location', 'approved_by', 'rejected_by', 'created_by'
+        base_tasks = Task.objects.filter(location=manager.location).select_related(
+            'assigned_to', 'location', 'approved_by', 'rejected_by', 'created_by'
         )
 
         # FIX: single aggregate for stats instead of 5 separate counts
@@ -2678,10 +2679,10 @@ class BranchManagerVerificationView(APIView):
                     'name': f"{task.created_by.first_name} {task.created_by.last_name}".strip() if task.created_by else None,
                     'role': task.created_by.get_role_display() if task.created_by else None,
                 },
-                'assigned_to': [
-                    {'id': u.id, 'name': f"{u.first_name} {u.last_name}".strip(), 'role': u.get_role_display(), 'email': u.email}
-                    for u in task.assigned_to.all()
-                ],
+                'assigned_to': {
+                    'id': task.assigned_to.id, 'name': f"{task.assigned_to.first_name} {task.assigned_to.last_name}".strip(),
+                    'email': task.assigned_to.email, 'role': task.assigned_to.role, 'role_display': task.assigned_to.get_role_display(),
+                } if task.assigned_to else None,
                 'submitted_at':     task.completed_at.strftime('%b %d, %I:%M %p') if task.completed_at else None,
                 'created_at':       task.created_at,
                 'approved_by':      f"{task.approved_by.first_name} {task.approved_by.last_name}".strip() if task.approved_by else None,

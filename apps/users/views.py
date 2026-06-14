@@ -483,7 +483,7 @@ class AppTaskViewSet(viewsets.ReadOnlyModelViewSet):
         user = request.user
 
         # ── Only assigned employee can complete ───────────────────
-        if not task.assigned_to.filter(id=user.id).exists():
+        if task.assigned_to_id != user.id:
             return Response(
                 {"error": "You can only complete tasks assigned to you."},
                 status=status.HTTP_403_FORBIDDEN

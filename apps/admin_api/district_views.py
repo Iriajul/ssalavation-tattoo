@@ -355,9 +355,8 @@ class DistrictManagerTaskView(APIView):
         task_qs = (
             Task.objects
             .filter(status='pending', location_id__in=loc_ids)
-            .prefetch_related('assigned_to')
             .select_related(
-                'location', 'completed_by',
+                'assigned_to', 'location', 'completed_by',
                 'approved_by', 'rejected_by', 'created_by'
             )
             .order_by('-created_at')
@@ -403,22 +402,31 @@ class DistrictManagerTaskView(APIView):
         }, status=status.HTTP_200_OK)
 
     def post(self, request):
-        serializer = TaskCreateSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        task = serializer.save(created_by=request.user)
+        raw     = request.data.get('assigned_to')
+        emp_ids = raw if isinstance(raw, list) else [raw]
 
-        for emp in task.assigned_to.all():
+        created_tasks = []
+        for emp_id in emp_ids:
+            data       = {**request.data, 'assigned_to': emp_id}
+            serializer = TaskCreateSerializer(data=data)
+            serializer.is_valid(raise_exception=True)
+            task = serializer.save(created_by=request.user)
             AppNotification.objects.create(
-                recipient  = emp,
-                notif_type = 'task_assigned',
-                title      = 'New Task Assigned',
-                message    = f"{request.user.get_full_name() or 'District Manager'} assigned you '{task.title}'",
-                task       = task,
+                recipient=task.assigned_to, notif_type='task_assigned',
+                title='New Task Assigned',
+                message=f"{request.user.get_full_name() or 'District Manager'} assigned you '{task.title}'",
+                task=task,
             )
+            created_tasks.append(task)
 
+        if len(created_tasks) == 1:
+            return Response({
+                'message': 'Task created successfully.',
+                'task':    TaskDetailSerializer(created_tasks[0]).data,
+            }, status=status.HTTP_201_CREATED)
         return Response({
-            'message': 'Task created successfully.',
-            'task':    TaskDetailSerializer(task).data,
+            'message': f'{len(created_tasks)} tasks created successfully.',
+            'tasks':   TaskDetailSerializer(created_tasks, many=True).data,
         }, status=status.HTTP_201_CREATED)
 
 # ================================================================
@@ -430,8 +438,8 @@ class DistrictManagerTaskDetailView(APIView):
 
     def _get_task(self, pk, loc_ids):
         try:
-            return Task.objects.prefetch_related('assigned_to').select_related(
-                'location', 'created_by'
+            return Task.objects.select_related(
+                'assigned_to', 'location', 'created_by'
             ).get(pk=pk, location_id__in=loc_ids)
         except Task.DoesNotExist:
             return None
@@ -517,8 +525,8 @@ class DistrictManagerVerificationView(APIView):
 
         base_tasks = Task.objects.filter(
             location_id__in=loc_ids
-        ).prefetch_related('assigned_to').select_related(
-            'location', 'approved_by', 'rejected_by', 'created_by'
+        ).select_related(
+            'assigned_to', 'location', 'approved_by', 'rejected_by', 'created_by'
         )
 
         if location_filter:
@@ -565,10 +573,10 @@ class DistrictManagerVerificationView(APIView):
                     'name': f"{task.created_by.first_name} {task.created_by.last_name}".strip() if task.created_by else None,
                     'role': task.created_by.get_role_display() if task.created_by else None,
                 },
-                'assigned_to': [
-                    {'id': u.id, 'name': f"{u.first_name} {u.last_name}".strip(), 'role': u.get_role_display(), 'email': u.email}
-                    for u in task.assigned_to.all()
-                ],
+                'assigned_to': {
+                    'id': task.assigned_to.id, 'name': f"{task.assigned_to.first_name} {task.assigned_to.last_name}".strip(),
+                    'email': task.assigned_to.email, 'role': task.assigned_to.role, 'role_display': task.assigned_to.get_role_display(),
+                } if task.assigned_to else None,
                 'submitted_at':     task.completed_at.strftime('%b %d, %I:%M %p') if task.completed_at else None,
                 'created_at':       task.created_at,
                 'approved_by':      f"{task.approved_by.first_name} {task.approved_by.last_name}".strip() if task.approved_by else None,
@@ -597,7 +605,7 @@ class DistrictManagerVerificationActionView(APIView):
 
     def _get_task(self, pk, loc_ids):
         try:
-            return Task.objects.prefetch_related('assigned_to').get(
+            return Task.objects.select_related('assigned_to').get(
                 pk=pk, location_id__in=loc_ids
             )
         except Task.DoesNotExist:
@@ -622,13 +630,12 @@ class DistrictManagerVerificationActionView(APIView):
             task.rejection_reason = None
             task.save(update_fields=['status', 'approved_by', 'approved_at', 'rejection_reason'])
 
-            for emp in task.assigned_to.all():
+            if task.assigned_to:
                 AppNotification.objects.create(
-                    recipient  = emp,
-                    notif_type = 'task_approved',
-                    title      = 'Task Approved',
-                    message    = f"Your '{task.title}' was approved by {request.user.get_full_name() or 'District Manager'}",
-                    task       = task,
+                    recipient=task.assigned_to, notif_type='task_approved',
+                    title='Task Approved',
+                    message=f"Your '{task.title}' was approved by {request.user.get_full_name() or 'District Manager'}",
+                    task=task,
                 )
 
             return Response({
@@ -659,13 +666,12 @@ class DistrictManagerVerificationActionView(APIView):
             task.rejection_reason = rejection_reason
             task.save(update_fields=['status', 'rejected_by', 'rejected_at', 'rejection_reason'])
 
-            for emp in task.assigned_to.all():
+            if task.assigned_to:
                 AppNotification.objects.create(
-                    recipient  = emp,
-                    notif_type = 'task_rejected',
-                    title      = 'Task Needs Revision',
-                    message    = f"'{task.title}' was rejected. {rejection_reason}",
-                    task       = task,
+                    recipient=task.assigned_to, notif_type='task_rejected',
+                    title='Task Needs Revision',
+                    message=f"'{task.title}' was rejected. {rejection_reason}",
+                    task=task,
                 )
 
             return Response({
@@ -960,16 +966,16 @@ class DistrictManagerEmployeePerformanceView(APIView):
 
         # ── Bulk task stats ───────────────────────────────────────
         task_rows = Task.objects.filter(
-            assigned_to__id__in = emp_ids,
+            assigned_to_id__in = emp_ids,
             created_at__gte     = start_datetime,
-        ).values('assigned_to__id').annotate(
+        ).values('assigned_to_id').annotate(
             total_tasks     = Count('id'),
             completed_tasks = Count(
                 Case(When(status__in=['completed', 'approved'], then=1),
                      output_field=IntegerField())
             ),
         )
-        task_map = {row['assigned_to__id']: row for row in task_rows}
+        task_map = {row['assigned_to_id']: row for row in task_rows}
 
         # ── Bulk attendance stats ─────────────────────────────────
         attendance_rows = Attendance.objects.filter(
@@ -1103,15 +1109,15 @@ class DistrictManagerPerformanceDashboardView(APIView):
         # ── 10 most recent tasks ──────────────────────────────────
         task_log_qs = Task.objects.filter(
             location_id__in=location_ids,
-        ).prefetch_related('assigned_to').select_related(
-            'location', 'created_by'
+        ).select_related(
+            'assigned_to', 'location', 'created_by'
         ).order_by('-created_at')[:10]
 
         task_log = [
             {
                 'id':               task.id,
                 'title':            task.title,
-                'assigned_to':      ', '.join(f"{u.first_name} {u.last_name}".strip() for u in task.assigned_to.all()) or '—',
+                'assigned_to':      f"{task.assigned_to.first_name} {task.assigned_to.last_name}".strip() if task.assigned_to else '—',
                 'location':         task.location.name if task.location else '—',
                 'assigned_by':      f"{task.created_by.first_name} {task.created_by.last_name}".strip() if task.created_by else '—',
                 'assigned_by_role': task.created_by.get_role_display() if task.created_by else '—',

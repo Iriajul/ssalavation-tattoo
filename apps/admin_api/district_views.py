@@ -398,21 +398,34 @@ class DistrictManagerTaskView(APIView):
         }, status=status.HTTP_200_OK)
 
     def post(self, request):
-        serializer = TaskCreateSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        task = serializer.save(created_by=request.user)
+        assigned_to_raw = request.data.get('assigned_to')
+        assigned_to_ids = assigned_to_raw if isinstance(assigned_to_raw, list) else [assigned_to_raw]
 
-        AppNotification.objects.create(
-            recipient  = task.assigned_to,
-            notif_type = 'task_assigned',
-            title      = 'New Task Assigned',
-            message    = f"{request.user.get_full_name() or 'District Manager'} assigned you '{task.title}'",
-            task       = task,
-        )
+        created_tasks = []
+        for emp_id in assigned_to_ids:
+            data       = {**request.data, 'assigned_to': emp_id}
+            serializer = TaskCreateSerializer(data=data)
+            serializer.is_valid(raise_exception=True)
+            task = serializer.save(created_by=request.user)
+
+            AppNotification.objects.create(
+                recipient  = task.assigned_to,
+                notif_type = 'task_assigned',
+                title      = 'New Task Assigned',
+                message    = f"{request.user.get_full_name() or 'District Manager'} assigned you '{task.title}'",
+                task       = task,
+            )
+            created_tasks.append(task)
+
+        if len(created_tasks) == 1:
+            return Response({
+                'message': 'Task created successfully.',
+                'task':    TaskDetailSerializer(created_tasks[0]).data,
+            }, status=status.HTTP_201_CREATED)
 
         return Response({
-            'message': 'Task created successfully.',
-            'task':    TaskDetailSerializer(task).data,
+            'message': f'{len(created_tasks)} tasks created successfully.',
+            'tasks':   TaskDetailSerializer(created_tasks, many=True).data,
         }, status=status.HTTP_201_CREATED)
 
 # ================================================================

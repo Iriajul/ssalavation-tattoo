@@ -197,7 +197,7 @@ class ResetPasswordView(APIView):
 # ================================================================
 
 class LocationViewSet(viewsets.ModelViewSet):
-    permission_classes = [IsSuperAdmin]
+    permission_classes = [IsSuperAdminOrDistrictManager]
     queryset           = Location.objects.all().order_by('-created_at')
 
     def get_serializer_class(self):
@@ -2676,7 +2676,7 @@ class BranchManagerVerificationView(APIView):
 # ================================================================
 
 class UserAttendanceView(APIView):
-    permission_classes = [IsSuperAdmin]
+    permission_classes = [IsSuperAdminOrDistrictManager]
 
     def get(self, request):
         from django.db import models as db_models

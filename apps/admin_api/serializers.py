@@ -4,7 +4,7 @@ from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 from django.contrib.auth.password_validation import validate_password
-from .models import FAQ, Attendance, Location, QRSession, SplashScreen, UserWorkSchedule, Task, Instruction, Notification
+from .models import FAQ, Attendance, Location, QRSession, SplashScreen, UserWorkSchedule, Task, Instruction, AdminNotification
 
 User = get_user_model()
 
@@ -885,48 +885,46 @@ class BranchManagerTaskListSerializer(serializers.ModelSerializer):
             return obj.status == 'pending' and obj.created_by_id == request.user.id
         return False
 
-class NotificationStatsSerializer(serializers.Serializer):
-    total_sent       = serializers.IntegerField()
-    delivered        = serializers.IntegerField()
-    active_locations = serializers.IntegerField()
+ALLOWED_RECIPIENT_ROLES = {
+    'super_admin':      ['district_manager', 'branch_manager'],
+    'district_manager': ['branch_manager'],
+    'branch_manager':   ['district_manager'],
+}
 
-class NotificationCreateSerializer(serializers.Serializer):
-    email    = serializers.EmailField(required=False)   # optional — if empty, send to all
-    location = serializers.PrimaryKeyRelatedField(
-        queryset=Location.objects.all(),
-        required=False                                  # optional — if empty, all locations
-    )
-    message  = serializers.CharField(required=True, min_length=5)
+class AdminNotificationCreateSerializer(serializers.Serializer):
+    recipient = serializers.PrimaryKeyRelatedField(queryset=User.objects.filter(is_active=True))
+    message   = serializers.CharField(required=True, min_length=1)
+    image     = serializers.ImageField(required=False, allow_null=True)
 
     def validate(self, data):
-        email    = data.get('email')
-        location = data.get('location')
-
-        # If email provided, location must also be provided
-        if email and not location:
+        sender    = self.context['request'].user
+        recipient = data['recipient']
+        allowed   = ALLOWED_RECIPIENT_ROLES.get(sender.role, [])
+        if recipient.role not in allowed:
             raise serializers.ValidationError({
-                "location": "Location is required when sending to a specific user."
+                "recipient": f"You cannot send notifications to a '{recipient.get_role_display()}' user."
             })
-
+        if recipient == sender:
+            raise serializers.ValidationError({"recipient": "You cannot send a notification to yourself."})
         return data
 
-class NotificationSerializer(serializers.ModelSerializer):
-    location_name = serializers.CharField(source='location.name', read_only=True)
-    sent_by_name  = serializers.SerializerMethodField()
+class AdminNotificationSerializer(serializers.ModelSerializer):
+    sender_name    = serializers.SerializerMethodField()
+    sender_role    = serializers.CharField(source='sender.role', read_only=True)
+    recipient_name = serializers.SerializerMethodField()
 
     class Meta:
-        model  = Notification
+        model  = AdminNotification
         fields = [
-            'id', 'email',
-            'location', 'location_name',
-            'message', 'status',
-            'sent_by', 'sent_by_name',
-            'created_at',
+            'id', 'sender', 'sender_name', 'sender_role',
+            'recipient', 'recipient_name',
+            'message', 'image', 'is_read', 'created_at',
         ]
-        read_only_fields = ['id', 'status', 'sent_by', 'created_at']
+        read_only_fields = ['id', 'sender', 'is_read', 'created_at']
 
-    def get_sent_by_name(self, obj):
-        if obj.sent_by:
-            return f"{obj.sent_by.first_name} {obj.sent_by.last_name}".strip() or obj.sent_by.username
-        return None
+    def get_sender_name(self, obj):
+        return f"{obj.sender.first_name} {obj.sender.last_name}".strip() or obj.sender.username
+
+    def get_recipient_name(self, obj):
+        return f"{obj.recipient.first_name} {obj.recipient.last_name}".strip() or obj.recipient.username
 

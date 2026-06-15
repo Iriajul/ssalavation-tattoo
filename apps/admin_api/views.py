@@ -22,9 +22,9 @@ from apps.users.models import AppNotification
 from .models import (
     FAQ, Attendance, Location, QRSession,
     SplashScreen, UserWorkSchedule, Task,
-    Instruction, ActivityLog, Notification
+    Instruction, ActivityLog, AdminNotification
 )
-from .permissions import IsBranchManager, IsSuperAdmin, IsClockInUser, IsSuperAdminOrDistrictManager
+from .permissions import IsBranchManager, IsSuperAdmin, IsClockInUser, IsSuperAdminOrDistrictManager, IsAdminUser
 from .utils import check_file_size
 from .serializers import (
     AdminChangePasswordSerializer,
@@ -59,9 +59,8 @@ from .serializers import (
     InstructionSerializer,
     InstructionListSerializer,
     InstructionStatsSerializer,
-    NotificationCreateSerializer,
-    NotificationSerializer,
-    NotificationStatsSerializer,
+    AdminNotificationCreateSerializer,
+    AdminNotificationSerializer,
 )
 
 User = get_user_model()
@@ -2840,94 +2839,88 @@ class UserAttendanceView(APIView):
 
 
 # ================================================================
-# NOTIFICATION VIEWSET
+# ADMIN NOTIFICATION VIEWSET
 # ================================================================
 
-class NotificationViewSet(viewsets.ModelViewSet):
-    permission_classes = [IsSuperAdminOrDistrictManager]
-    http_method_names  = ['get', 'post', 'delete']
+class AdminNotificationViewSet(viewsets.ViewSet):
+    permission_classes = [IsAdminUser]
+    parser_classes     = [MultiPartParser, FormParser, JSONParser]
 
-    def get_queryset(self):
-        return Notification.objects.select_related('sent_by', 'recipient', 'location').order_by('-created_at')
-
-    def get_serializer_class(self):
-        if self.action == 'create':
-            return NotificationCreateSerializer
-        return NotificationSerializer
-
-    def list(self, request, *args, **kwargs):
-        queryset = self.get_queryset()
-
-        # FIX: single aggregate for stats
-        stats_data = queryset.aggregate(
-            total_sent = Count('id'),
-            delivered  = Count(Case(When(status='sent', then=1), output_field=IntegerField())),
+    def list(self, request):
+        received = (
+            AdminNotification.objects
+            .filter(recipient=request.user)
+            .select_related('sender', 'recipient')
+            .order_by('-created_at')[:20]
         )
-        stats = NotificationStatsSerializer({
-            'total_sent':       stats_data['total_sent'],
-            'delivered':        stats_data['delivered'],
-            'active_locations': Location.objects.filter(status='active').count(),
-        }).data
-
-        recent     = queryset[:10]
-        serializer = NotificationSerializer(recent, many=True)
+        unread_count = AdminNotification.objects.filter(recipient=request.user, is_read=False).count()
         return Response({
-            'stats':                stats,
-            'recent_notifications': serializer.data,
+            'unread_count': unread_count,
+            'received':     AdminNotificationSerializer(received, many=True, context={'request': request}).data,
         }, status=status.HTTP_200_OK)
 
-    def create(self, request, *args, **kwargs):
-        serializer = NotificationCreateSerializer(data=request.data)
+    def create(self, request):
+        serializer = AdminNotificationCreateSerializer(data=request.data, context={'request': request})
         serializer.is_valid(raise_exception=True)
+        notification = AdminNotification.objects.create(
+            sender    = request.user,
+            recipient = serializer.validated_data['recipient'],
+            message   = serializer.validated_data['message'],
+            image     = serializer.validated_data.get('image'),
+        )
+        return Response(
+            AdminNotificationSerializer(notification, context={'request': request}).data,
+            status=status.HTTP_201_CREATED,
+        )
 
-        email    = serializer.validated_data.get('email')
-        location = serializer.validated_data.get('location')
-        message  = serializer.validated_data['message']
-
-        if email:
-            try:
-                recipients = [User.objects.get(email=email, is_active=True)]
-            except User.DoesNotExist:
-                return Response({"error": "No active user found with this email."}, status=status.HTTP_400_BAD_REQUEST)
-        else:
-            recipients = list(User.objects.filter(is_active=True).exclude(role='super_admin'))
-
-        sent_count   = 0
-        failed_count = 0
-
-        for recipient in recipients:
-            notification_status = 'sent'
-            try:
-                send_mail(
-                    subject        = "Salvation Tattoo Lounge — Notification",
-                    message        = message,
-                    from_email     = settings.DEFAULT_FROM_EMAIL,
-                    recipient_list = [recipient.email],
-                    fail_silently  = False,
-                )
-                sent_count += 1
-            except Exception as e:
-                print(f"Notification email failed for {recipient.email}: {e}")
-                notification_status = 'failed'
-                failed_count += 1
-
-            Notification.objects.create(
-                sent_by   = request.user,
-                recipient = recipient,
-                email     = recipient.email,
-                location  = location or recipient.location,
-                message   = message,
-                status    = notification_status,
+    def destroy(self, request, pk=None):
+        try:
+            notification = AdminNotification.objects.get(
+                Q(pk=pk) & (Q(sender=request.user) | Q(recipient=request.user))
             )
-
-        return Response({
-            'message':      f'Notification sent to {sent_count} user(s). {failed_count} failed.',
-            'sent_count':   sent_count,
-            'failed_count': failed_count,
-            'total':        sent_count + failed_count,
-        }, status=status.HTTP_201_CREATED)
-
-    def destroy(self, request, *args, **kwargs):
-        notification = self.get_object()
+        except AdminNotification.DoesNotExist:
+            return Response({'error': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
         notification.delete()
-        return Response({"message": "Notification deleted."}, status=status.HTTP_200_OK)
+        return Response({'message': 'Notification deleted.'}, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['get'])
+    def sent(self, request):
+        sent = (
+            AdminNotification.objects
+            .filter(sender=request.user)
+            .select_related('sender', 'recipient')
+            .order_by('-created_at')[:20]
+        )
+        return Response({
+            'sent': AdminNotificationSerializer(sent, many=True, context={'request': request}).data,
+        }, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['get'])
+    def recipients(self, request):
+        allowed_roles = {
+            'super_admin':      ['district_manager', 'branch_manager'],
+            'district_manager': ['branch_manager'],
+            'branch_manager':   ['district_manager'],
+        }.get(request.user.role, [])
+        users = (
+            User.objects
+            .filter(role__in=allowed_roles, is_active=True)
+            .exclude(pk=request.user.pk)
+            .values('id', 'first_name', 'last_name', 'email', 'role')
+        )
+        return Response({'recipients': list(users)}, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['patch'])
+    def read(self, request, pk=None):
+        try:
+            notification = AdminNotification.objects.get(pk=pk, recipient=request.user)
+        except AdminNotification.DoesNotExist:
+            return Response({'error': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
+        notification.is_read = True
+        notification.save(update_fields=['is_read'])
+        return Response({'message': 'Marked as read.'}, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['post'], url_path='read-all')
+    def read_all(self, request):
+        AdminNotification.objects.filter(recipient=request.user, is_read=False).update(is_read=True)
+        return Response({'message': 'All notifications marked as read.'}, status=status.HTTP_200_OK)

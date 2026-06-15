@@ -34,7 +34,7 @@ from .views import (
     SuperAdminQRIntervalListView,
     ClockInUserQRView,
     BranchManagerLocationEmployeesView,
-    NotificationViewSet,
+    AdminNotificationViewSet,
     BranchManagerReportsView,
     BranchManagerChangePasswordView,
 
@@ -47,7 +47,7 @@ router.register(r'tasks',        TaskViewSet,        basename='task')
 router.register(r'instructions', InstructionViewSet, basename='instruction')
 router.register('app-content/faqs', FAQViewSet, basename='faqs')
 router.register('manager/tasks', BranchManagerTaskViewSet, basename='manager-tasks')
-router.register(r'notifications', NotificationViewSet, basename='notification')
+router.register(r'notifications', AdminNotificationViewSet, basename='notification')
 
 urlpatterns = [
     # ── Auth ──────────────────────────────────────────────────────

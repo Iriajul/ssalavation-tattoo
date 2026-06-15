@@ -469,57 +469,32 @@ class Attendance(models.Model):
 
 
 # ================================================================
-# NOTIFICATION
+# ADMIN NOTIFICATION
 # ================================================================
 
-class Notification(models.Model):
-
-    class Status(models.TextChoices):
-        SENT   = 'sent',   'Sent'
-        FAILED = 'failed', 'Failed'
-
-    sent_by   = models.ForeignKey(
+class AdminNotification(models.Model):
+    sender = models.ForeignKey(
         settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True, blank=True,
-        related_name='sent_notifications'
+        on_delete=models.CASCADE,
+        related_name='sent_admin_notifications'
     )
     recipient = models.ForeignKey(
         settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True, blank=True,
-        related_name='received_notifications'
-    )
-    email    = models.EmailField(blank=True, null=True)
-    location = models.ForeignKey(
-        'Location',
-        on_delete=models.SET_NULL,
-        null=True, blank=True,
-        related_name='notifications'
+        on_delete=models.CASCADE,
+        related_name='received_admin_notifications'
     )
     message    = models.TextField()
-    status     = models.CharField(max_length=10, choices=Status.choices, default=Status.SENT)
+    image      = models.ImageField(upload_to='admin_notifications/', blank=True, null=True)
+    is_read    = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        db_table = 'notifications'
+        db_table = 'admin_notifications'
         ordering = ['-created_at']
-        constraints = [
-            # ── WHY: a notification with no recipient FK and no email
-            # address is a dead record — it can never be delivered and
-            # just pollutes the notifications table.
-            models.CheckConstraint(
-                condition=(
-                    Q(recipient__isnull=False) |
-                    (Q(email__isnull=False) & ~Q(email=''))
-                ),
-                name='notification_requires_target'
-),
-        ]
         indexes = [
-            models.Index(fields=['status'],     name='notif_status_idx'),
-            models.Index(fields=['created_at'], name='notif_created_at_idx'),
+            models.Index(fields=['recipient', 'is_read'], name='admin_notif_recipient_read_idx'),
+            models.Index(fields=['created_at'],           name='admin_notif_created_at_idx'),
         ]
 
     def __str__(self):
-        return f"Notification to {self.email} — {self.status}"
+        return f"{self.sender.email} → {self.recipient.email}"

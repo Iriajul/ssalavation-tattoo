@@ -2910,17 +2910,3 @@ class AdminNotificationViewSet(viewsets.ViewSet):
         )
         return Response({'recipients': list(users)}, status=status.HTTP_200_OK)
 
-    @action(detail=True, methods=['patch'])
-    def read(self, request, pk=None):
-        try:
-            notification = AdminNotification.objects.get(pk=pk, recipient=request.user)
-        except AdminNotification.DoesNotExist:
-            return Response({'error': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
-        notification.is_read = True
-        notification.save(update_fields=['is_read'])
-        return Response({'message': 'Marked as read.'}, status=status.HTTP_200_OK)
-
-    @action(detail=False, methods=['post'], url_path='read-all')
-    def read_all(self, request):
-        AdminNotification.objects.filter(recipient=request.user, is_read=False).update(is_read=True)
-        return Response({'message': 'All notifications marked as read.'}, status=status.HTTP_200_OK)

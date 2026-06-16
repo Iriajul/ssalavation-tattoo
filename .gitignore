@@ -54,6 +54,7 @@ db.sqlite3
 .env
 .env.production
 *.env
+.deploy
 # Docker
 docker-compose.override.yml
 .docker/

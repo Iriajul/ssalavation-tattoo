@@ -478,23 +478,20 @@ class AdminNotification(models.Model):
         on_delete=models.CASCADE,
         related_name='sent_admin_notifications'
     )
-    recipient = models.ForeignKey(
+    recipients = models.ManyToManyField(
         settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
         related_name='received_admin_notifications'
     )
     message    = models.TextField()
     image      = models.ImageField(upload_to='admin_notifications/', blank=True, null=True)
-    is_read    = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         db_table = 'admin_notifications'
         ordering = ['-created_at']
         indexes = [
-            models.Index(fields=['recipient', 'is_read'], name='admin_notif_recipient_read_idx'),
-            models.Index(fields=['created_at'],           name='admin_notif_created_at_idx'),
+            models.Index(fields=['created_at'], name='admin_notif_created_at_idx'),
         ]
 
     def __str__(self):
-        return f"{self.sender.email} → {self.recipient.email}"
+        return f"Notification from {self.sender.email}"

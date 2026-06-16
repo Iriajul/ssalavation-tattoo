@@ -61,6 +61,7 @@ from .serializers import (
     InstructionStatsSerializer,
     AdminNotificationCreateSerializer,
     AdminNotificationSerializer,
+    AdminNotificationSentSerializer,
 )
 
 User = get_user_model()
@@ -2849,51 +2850,40 @@ class AdminNotificationViewSet(viewsets.ViewSet):
     def list(self, request):
         received = (
             AdminNotification.objects
-            .filter(recipient=request.user)
-            .select_related('sender', 'recipient')
+            .filter(recipients=request.user)
+            .select_related('sender')
             .order_by('-created_at')[:20]
         )
-        unread_count = AdminNotification.objects.filter(recipient=request.user, is_read=False).count()
         return Response({
-            'unread_count': unread_count,
-            'received':     AdminNotificationSerializer(received, many=True, context={'request': request}).data,
+            'received': AdminNotificationSerializer(received, many=True, context={'request': request}).data,
         }, status=status.HTTP_200_OK)
 
     def create(self, request):
         serializer = AdminNotificationCreateSerializer(data=request.data, context={'request': request})
         serializer.is_valid(raise_exception=True)
         notification = AdminNotification.objects.create(
-            sender    = request.user,
-            recipient = serializer.validated_data['recipient'],
-            message   = serializer.validated_data['message'],
-            image     = serializer.validated_data.get('image'),
+            sender  = request.user,
+            message = serializer.validated_data['message'],
+            image   = serializer.validated_data.get('image'),
         )
+        notification.recipients.set(serializer.validated_data['recipients'])
         return Response(
-            AdminNotificationSerializer(notification, context={'request': request}).data,
+            AdminNotificationSentSerializer(notification).data,
             status=status.HTTP_201_CREATED,
         )
-
-    def destroy(self, request, pk=None):
-        try:
-            notification = AdminNotification.objects.get(
-                Q(pk=pk) & (Q(sender=request.user) | Q(recipient=request.user))
-            )
-        except AdminNotification.DoesNotExist:
-            return Response({'error': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
-        notification.delete()
-        return Response({'message': 'Notification deleted.'}, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=['get'])
     def sent(self, request):
         sent = (
             AdminNotification.objects
             .filter(sender=request.user)
-            .select_related('sender', 'recipient')
+            .prefetch_related('recipients')
             .order_by('-created_at')[:20]
         )
-        return Response({
-            'sent': AdminNotificationSerializer(sent, many=True, context={'request': request}).data,
-        }, status=status.HTTP_200_OK)
+        return Response(
+            AdminNotificationSentSerializer(sent, many=True).data,
+            status=status.HTTP_200_OK,
+        )
 
     @action(detail=False, methods=['get'])
     def recipients(self, request):

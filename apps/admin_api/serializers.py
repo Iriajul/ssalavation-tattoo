@@ -892,39 +892,54 @@ ALLOWED_RECIPIENT_ROLES = {
 }
 
 class AdminNotificationCreateSerializer(serializers.Serializer):
-    recipient = serializers.PrimaryKeyRelatedField(queryset=User.objects.filter(is_active=True))
-    message   = serializers.CharField(required=True, min_length=1)
-    image     = serializers.ImageField(required=False, allow_null=True)
+    recipients = serializers.PrimaryKeyRelatedField(
+        queryset=User.objects.filter(is_active=True),
+        many=True
+    )
+    message = serializers.CharField(required=True, min_length=1)
+    image   = serializers.ImageField(required=False, allow_null=True)
 
     def validate(self, data):
-        sender    = self.context['request'].user
-        recipient = data['recipient']
-        allowed   = ALLOWED_RECIPIENT_ROLES.get(sender.role, [])
-        if recipient.role not in allowed:
-            raise serializers.ValidationError({
-                "recipient": f"You cannot send notifications to a '{recipient.get_role_display()}' user."
-            })
-        if recipient == sender:
-            raise serializers.ValidationError({"recipient": "You cannot send a notification to yourself."})
+        sender  = self.context['request'].user
+        allowed = ALLOWED_RECIPIENT_ROLES.get(sender.role, [])
+        errors  = []
+        for recipient in data['recipients']:
+            if recipient == sender:
+                errors.append(f"You cannot send a notification to yourself.")
+            elif recipient.role not in allowed:
+                errors.append(f"You cannot send to '{recipient.get_role_display()}' ({recipient.email}).")
+        if errors:
+            raise serializers.ValidationError({"recipients": errors})
         return data
 
+
 class AdminNotificationSerializer(serializers.ModelSerializer):
-    sender_name    = serializers.SerializerMethodField()
-    sender_role    = serializers.CharField(source='sender.role', read_only=True)
-    recipient_name = serializers.SerializerMethodField()
+    sender_name = serializers.SerializerMethodField()
+    sender_role = serializers.CharField(source='sender.role', read_only=True)
 
     class Meta:
         model  = AdminNotification
-        fields = [
-            'id', 'sender', 'sender_name', 'sender_role',
-            'recipient', 'recipient_name',
-            'message', 'image', 'is_read', 'created_at',
-        ]
-        read_only_fields = ['id', 'sender', 'is_read', 'created_at']
+        fields = ['id', 'sender', 'sender_name', 'sender_role', 'message', 'image', 'created_at']
+        read_only_fields = ['id', 'sender', 'created_at']
 
     def get_sender_name(self, obj):
         return f"{obj.sender.first_name} {obj.sender.last_name}".strip() or obj.sender.username
 
-    def get_recipient_name(self, obj):
-        return f"{obj.recipient.first_name} {obj.recipient.last_name}".strip() or obj.recipient.username
+
+class AdminNotificationSentSerializer(serializers.ModelSerializer):
+    recipients = serializers.SerializerMethodField()
+
+    class Meta:
+        model  = AdminNotification
+        fields = ['id', 'message', 'image', 'created_at', 'recipients']
+
+    def get_recipients(self, obj):
+        return [
+            {
+                'id':   r.id,
+                'name': f"{r.first_name} {r.last_name}".strip() or r.username,
+                'role': r.get_role_display(),
+            }
+            for r in obj.recipients.all()
+        ]
 

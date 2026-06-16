@@ -2860,6 +2860,8 @@ class AdminNotificationViewSet(viewsets.ViewSet):
 
     def create(self, request):
         import json
+        EMPLOYEE_ROLES = ['tattoo_artist', 'body_piercer', 'staff']
+
         data = request.data.copy()
         recipients_raw = data.get('recipients', '')
         if isinstance(recipients_raw, str) and recipients_raw.strip().startswith('['):
@@ -2867,14 +2869,37 @@ class AdminNotificationViewSet(viewsets.ViewSet):
                 data.setlist('recipients', [str(r) for r in json.loads(recipients_raw)])
             except (json.JSONDecodeError, TypeError):
                 pass
+
         serializer = AdminNotificationCreateSerializer(data=data, context={'request': request})
         serializer.is_valid(raise_exception=True)
+
+        all_recipients = serializer.validated_data['recipients']
+        message        = serializer.validated_data['message']
+        image          = serializer.validated_data.get('image')
+        sender_name    = f"{request.user.first_name} {request.user.last_name}".strip() or request.user.username
+
+        employee_recipients = [r for r in all_recipients if r.role in EMPLOYEE_ROLES]
+        admin_recipients    = [r for r in all_recipients if r.role not in EMPLOYEE_ROLES]
+
+        # send to app for employees
+        if employee_recipients:
+            AppNotification.objects.bulk_create([
+                AppNotification(
+                    recipient  = emp,
+                    notif_type = AppNotification.NotifType.SYSTEM,
+                    title      = f"Message from {sender_name}",
+                    message    = message,
+                )
+                for emp in employee_recipients
+            ])
+
+        # create admin notification for all recipients (so sent view shows everyone)
         notification = AdminNotification.objects.create(
             sender  = request.user,
-            message = serializer.validated_data['message'],
-            image   = serializer.validated_data.get('image'),
+            message = message,
+            image   = image,
         )
-        notification.recipients.set(serializer.validated_data['recipients'])
+        notification.recipients.set(all_recipients)
         notification = AdminNotification.objects.prefetch_related('recipients').get(pk=notification.pk)
         return Response(
             AdminNotificationSentSerializer(notification, context={'request': request}).data,
@@ -2896,10 +2921,11 @@ class AdminNotificationViewSet(viewsets.ViewSet):
 
     @action(detail=False, methods=['get'])
     def recipients(self, request):
-        allowed_roles = {
-            'super_admin':      ['district_manager', 'branch_manager'],
-            'district_manager': ['branch_manager'],
-            'branch_manager':   ['district_manager'],
+        EMPLOYEE_ROLES = ['tattoo_artist', 'body_piercer', 'staff']
+        allowed_roles  = {
+            'super_admin':      ['district_manager', 'branch_manager'] + EMPLOYEE_ROLES,
+            'district_manager': ['branch_manager'] + EMPLOYEE_ROLES,
+            'branch_manager':   ['district_manager'] + EMPLOYEE_ROLES,
         }.get(request.user.role, [])
 
         users = (
@@ -2908,6 +2934,13 @@ class AdminNotificationViewSet(viewsets.ViewSet):
             .exclude(pk=request.user.pk)
             .select_related('location')
         )
+
+        # branch managers can only notify employees at their own location
+        if request.user.role == 'branch_manager' and request.user.location_id:
+            users = users.filter(
+                Q(role='district_manager') |
+                Q(role__in=EMPLOYEE_ROLES, location_id=request.user.location_id)
+            )
 
         search   = request.query_params.get('search', '').strip()
         role     = request.query_params.get('role', '').strip()

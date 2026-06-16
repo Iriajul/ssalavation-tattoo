@@ -885,10 +885,12 @@ class BranchManagerTaskListSerializer(serializers.ModelSerializer):
             return obj.status == 'pending' and obj.created_by_id == request.user.id
         return False
 
+EMPLOYEE_NOTIFICATION_ROLES = ['tattoo_artist', 'body_piercer', 'staff']
+
 ALLOWED_RECIPIENT_ROLES = {
-    'super_admin':      ['district_manager', 'branch_manager'],
-    'district_manager': ['branch_manager'],
-    'branch_manager':   ['district_manager'],
+    'super_admin':      ['district_manager', 'branch_manager'] + EMPLOYEE_NOTIFICATION_ROLES,
+    'district_manager': ['branch_manager'] + EMPLOYEE_NOTIFICATION_ROLES,
+    'branch_manager':   ['district_manager'] + EMPLOYEE_NOTIFICATION_ROLES,
 }
 
 class AdminNotificationCreateSerializer(serializers.Serializer):

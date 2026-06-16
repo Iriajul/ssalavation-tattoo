@@ -2867,8 +2867,9 @@ class AdminNotificationViewSet(viewsets.ViewSet):
             image   = serializer.validated_data.get('image'),
         )
         notification.recipients.set(serializer.validated_data['recipients'])
+        notification = AdminNotification.objects.prefetch_related('recipients').get(pk=notification.pk)
         return Response(
-            AdminNotificationSentSerializer(notification).data,
+            AdminNotificationSentSerializer(notification, context={'request': request}).data,
             status=status.HTTP_201_CREATED,
         )
 
@@ -2881,7 +2882,7 @@ class AdminNotificationViewSet(viewsets.ViewSet):
             .order_by('-created_at')[:20]
         )
         return Response(
-            AdminNotificationSentSerializer(sent, many=True).data,
+            AdminNotificationSentSerializer(sent, many=True, context={'request': request}).data,
             status=status.HTTP_200_OK,
         )
 

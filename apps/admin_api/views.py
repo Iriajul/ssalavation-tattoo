@@ -2859,7 +2859,15 @@ class AdminNotificationViewSet(viewsets.ViewSet):
         }, status=status.HTTP_200_OK)
 
     def create(self, request):
-        serializer = AdminNotificationCreateSerializer(data=request.data, context={'request': request})
+        import json
+        data = request.data.copy()
+        recipients_raw = data.get('recipients', '')
+        if isinstance(recipients_raw, str) and recipients_raw.strip().startswith('['):
+            try:
+                data.setlist('recipients', [str(r) for r in json.loads(recipients_raw)])
+            except (json.JSONDecodeError, TypeError):
+                pass
+        serializer = AdminNotificationCreateSerializer(data=data, context={'request': request})
         serializer.is_valid(raise_exception=True)
         notification = AdminNotification.objects.create(
             sender  = request.user,

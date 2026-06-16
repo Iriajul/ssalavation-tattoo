@@ -2,24 +2,17 @@ from pathlib import Path
 import environ
 from datetime import timedelta
 
-# --------------------------------------------------
-# BASE DIR & ENV
-# --------------------------------------------------
-BASE_DIR = Path(__file__).resolve().parent.parent
-
-# Load environment variables from .env file
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 env = environ.Env(DEBUG=(bool, False))
-
-# environ.Env.read_env(str(BASE_DIR / ".env"))
+environ.Env.read_env(str(BASE_DIR / ".env"))
 
 # --------------------------------------------------
 # SECURITY
 # --------------------------------------------------
 SECRET_KEY = env("SECRET_KEY")
-DEBUG = env.bool("DEBUG", default=True)
+DEBUG = env.bool("DEBUG", default=False)
 
-# Host for production
 ALLOWED_HOSTS = [
     "127.0.0.1",
     "localhost",
@@ -43,14 +36,12 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
 
-    # Third-party
     "rest_framework",
     "rest_framework_simplejwt.token_blacklist",
     "cloudinary",
     "cloudinary_storage",
-    'django.contrib.postgres',
+    "django.contrib.postgres",
 
-    # Local apps
     "apps.admin_api",
     "apps.users",
 ]
@@ -59,12 +50,11 @@ INSTALLED_APPS = [
 # MIDDLEWARE
 # --------------------------------------------------
 MIDDLEWARE = [
-    "corsheaders.middleware.CorsMiddleware",  # MUST BE FIRST
+    "corsheaders.middleware.CorsMiddleware",
 
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
-
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
@@ -95,23 +85,6 @@ TEMPLATES = [
         },
     },
 ]
-
-# --------------------------------------------------
-# DATABASE
-# --------------------------------------------------
-DATABASES = {
-    "default": {
-        "ENGINE": env("DB_ENGINE", default="django.db.backends.postgresql"),
-        "NAME": env("DB_NAME"),
-        "USER": env("DB_USER"),
-        "PASSWORD": env("DB_PASSWORD"),
-        "HOST": env("DB_HOST", default="localhost"),
-        "PORT": env("DB_PORT", default="5432"),
-        # "OPTIONS": {
-        #     "options": "-c search_path=alex"
-        # },
-    }
-}
 
 # --------------------------------------------------
 # AUTH
@@ -145,7 +118,7 @@ SIMPLE_JWT = {
 }
 
 # --------------------------------------------------
-# CORS (FIXED)
+# CORS
 # --------------------------------------------------
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
@@ -158,7 +131,7 @@ CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOW_ALL_ORIGINS = False
 
 # --------------------------------------------------
-# CSRF (FIXED)
+# CSRF
 # --------------------------------------------------
 CSRF_TRUSTED_ORIGINS = [
     "https://hirenearbylocals.com",
@@ -170,11 +143,10 @@ CSRF_TRUSTED_ORIGINS = [
 ]
 
 # --------------------------------------------------
-# SECURITY SETTINGS
+# SECURITY
 # --------------------------------------------------
-SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 USE_X_FORWARDED_HOST = True
-
 SESSION_COOKIE_SECURE = not DEBUG
 CSRF_COOKIE_SECURE = not DEBUG
 SECURE_SSL_REDIRECT = False
@@ -196,7 +168,7 @@ USE_TZ = True
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # --------------------------------------------------
-# FILE UPLOAD SIZE LIMIT — 30MB
+# FILE UPLOAD SIZE LIMIT
 # --------------------------------------------------
 DATA_UPLOAD_MAX_MEMORY_SIZE = 31457280  # 30MB
 FILE_UPLOAD_MAX_MEMORY_SIZE = 31457280  # 30MB
@@ -217,10 +189,8 @@ DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL")
 # --------------------------------------------------
 CLOUDINARY_STORAGE = {
     "CLOUD_NAME": env("CLOUDINARY_CLOUD_NAME"),
-    "API_KEY": env("CLOUDINARY_API_KEY"),
+    "API_KEY":    env("CLOUDINARY_API_KEY"),
     "API_SECRET": env("CLOUDINARY_API_SECRET"),
 }
-
-
 
 DEFAULT_FILE_STORAGE = "cloudinary_storage.storage.MediaCloudinaryStorage"

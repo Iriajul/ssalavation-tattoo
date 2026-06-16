@@ -1,10 +1,9 @@
 FROM python:3.11
 
 # Prevent Python from writing .pyc files
-ENV PYTHONDONTWRITEBYTECODE=1
-
-# Ensure logs appear instantly in Docker logs
-ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    DJANGO_SETTINGS_MODULE=config.settings.production
 
 WORKDIR /app
 

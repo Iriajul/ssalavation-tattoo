@@ -52,6 +52,7 @@ db.sqlite3
 *.sublime-project
 # Environment variables
 .env
+.env.production
 *.env
 # Docker
 docker-compose.override.yml

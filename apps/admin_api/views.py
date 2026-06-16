@@ -2901,11 +2901,29 @@ class AdminNotificationViewSet(viewsets.ViewSet):
             'district_manager': ['branch_manager'],
             'branch_manager':   ['district_manager'],
         }.get(request.user.role, [])
+
         users = (
             User.objects
             .filter(role__in=allowed_roles, is_active=True)
             .exclude(pk=request.user.pk)
-            .values('id', 'first_name', 'last_name', 'email', 'role')
+            .select_related('location')
         )
-        return Response({'recipients': list(users)}, status=status.HTTP_200_OK)
+
+        search   = request.query_params.get('search', '').strip()
+        role     = request.query_params.get('role', '').strip()
+        location = request.query_params.get('location', '').strip()
+
+        if search:
+            users = users.filter(
+                Q(first_name__icontains=search) |
+                Q(last_name__icontains=search)  |
+                Q(email__icontains=search)
+            )
+        if role:
+            users = users.filter(role=role)
+        if location:
+            users = users.filter(location_id=location)
+
+        data = users.values('id', 'first_name', 'last_name', 'email', 'role', 'location_id', 'location__name')
+        return Response({'recipients': list(data)}, status=status.HTTP_200_OK)
 

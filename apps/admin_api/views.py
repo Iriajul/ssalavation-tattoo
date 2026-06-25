@@ -538,7 +538,10 @@ class TaskViewSet(viewsets.ModelViewSet):
                 {"error": "Only pending tasks can be edited."},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        serializer = self.get_serializer(task, data=request.data, partial=True)
+        data = request.data.copy()
+        if isinstance(data.get('assigned_to'), list):
+            data['assigned_to'] = data['assigned_to'][0]
+        serializer = self.get_serializer(task, data=data, partial=True)
         serializer.is_valid(raise_exception=True)
         task = serializer.save()
         return Response({
@@ -2562,7 +2565,10 @@ class BranchManagerTaskViewSet(viewsets.ModelViewSet):
         if task.created_by != request.user:
             return Response({"error": "You can only edit tasks you created."}, status=status.HTTP_403_FORBIDDEN)
 
-        serializer = self.get_serializer(task, data=request.data, partial=True)
+        data = request.data.copy()
+        if isinstance(data.get('assigned_to'), list):
+            data['assigned_to'] = data['assigned_to'][0]
+        serializer = self.get_serializer(task, data=data, partial=True)
         serializer.is_valid(raise_exception=True)
         task = serializer.save()
         return Response({'message': 'Task updated successfully.', 'task': TaskDetailSerializer(task).data}, status=status.HTTP_200_OK)

@@ -454,7 +454,10 @@ class DistrictManagerTaskDetailView(APIView):
         if task.status != 'pending':
             return Response({'error': 'Only pending tasks can be edited.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        serializer = TaskUpdateSerializer(task, data=request.data, partial=True)
+        data = request.data.copy()
+        if isinstance(data.get('assigned_to'), list):
+            data['assigned_to'] = data['assigned_to'][0]
+        serializer = TaskUpdateSerializer(task, data=data, partial=True)
         serializer.is_valid(raise_exception=True)
         task = serializer.save()
         return Response({

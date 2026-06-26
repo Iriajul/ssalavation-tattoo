@@ -135,7 +135,7 @@ class WorkScheduleSerializer(serializers.ModelSerializer):
 class UserListSerializer(serializers.ModelSerializer):
     role_display  = serializers.CharField(source='get_role_display', read_only=True)
     location_name = serializers.CharField(source='location.name', read_only=True)
-    joined        = serializers.DateTimeField(source='date_joined', format='%b %d, %Y', read_only=True)
+    joined        = serializers.DateTimeField(source='date_joined', format='%Y-%m-%d', read_only=True)
     user_status   = serializers.SerializerMethodField()
     work_schedules = WorkScheduleSerializer(many=True, read_only=True)
 

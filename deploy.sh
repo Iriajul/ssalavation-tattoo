@@ -97,12 +97,12 @@ fi
 step "Docker"
 if [[ "\$REBUILD" == true ]]; then
     echo "  Dockerfile or requirements changed — rebuilding image..."
-    docker compose down
+    docker compose down --remove-orphans
     docker compose up -d --build
     ok "Rebuilt and started"
 else
     echo "  No Dockerfile/requirements change — restarting containers..."
-    docker compose down
+    docker compose down --remove-orphans
     docker compose up -d
     ok "Restarted"
 fi

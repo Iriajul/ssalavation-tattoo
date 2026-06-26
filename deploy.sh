@@ -96,17 +96,16 @@ fi
 
 step "Docker"
 if [[ "\$REBUILD" == true ]]; then
-    echo "  Dockerfile or requirements changed — rebuilding image..."
+    echo "  Dockerfile or requirements changed — full rebuild..."
     docker compose down --remove-orphans
     docker system prune -f
     docker compose up -d --build
     ok "Rebuilt and started"
 else
-    echo "  No Dockerfile/requirements change — restarting containers..."
-    docker compose down --remove-orphans
-    docker system prune -f
-    docker compose up -d
-    ok "Restarted"
+    echo "  Python-only change — restarting backend only (db keeps running)..."
+    docker compose up -d 2>/dev/null || true
+    docker compose restart backend
+    ok "Backend restarted"
 fi
 
 step "Migrations"

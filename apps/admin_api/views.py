@@ -547,7 +547,7 @@ class TaskViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(task, data=data, partial=True)
         serializer.is_valid(raise_exception=True)
         task = serializer.save()
-        all_tasks = [task]
+        new_task_ids = []
 
         # Create new tasks for additional users
         for emp_id in emp_ids[1:]:
@@ -575,7 +575,16 @@ class TaskViewSet(viewsets.ModelViewSet):
                 message=f"{request.user.get_full_name() or 'Admin'} assigned you '{new_task.title}'",
                 task=new_task,
             )
-            all_tasks.append(new_task)
+            new_task_ids.append(new_task.pk)
+
+        # Return the updated task + all existing tasks with same title/location/due_date + new tasks
+        all_tasks = Task.objects.select_related(
+            'assigned_to', 'location', 'completed_by', 'created_by'
+        ).filter(
+            title=task.title,
+            location=task.location,
+            due_date=task.due_date,
+        ).order_by('created_at')
 
         return Response({
             'message': 'Task updated successfully.',
@@ -2607,7 +2616,6 @@ class BranchManagerTaskViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(task, data=data, partial=True)
         serializer.is_valid(raise_exception=True)
         task = serializer.save()
-        all_tasks = [task]
 
         # Create new tasks for additional users
         for emp_id in emp_ids[1:]:
@@ -2635,7 +2643,14 @@ class BranchManagerTaskViewSet(viewsets.ModelViewSet):
                 message=f"{request.user.get_full_name() or 'Manager'} assigned you '{new_task.title}'",
                 task=new_task,
             )
-            all_tasks.append(new_task)
+
+        all_tasks = Task.objects.select_related(
+            'assigned_to', 'location', 'completed_by', 'created_by'
+        ).filter(
+            title=task.title,
+            location=task.location,
+            due_date=task.due_date,
+        ).order_by('created_at')
 
         return Response({
             'message': 'Task updated successfully.',

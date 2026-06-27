@@ -374,13 +374,13 @@ class TaskListSerializer(serializers.ModelSerializer):
 
     def get_assigned_to(self, obj):
         if not obj.assigned_to:
-            return None
+            return []
         u = obj.assigned_to
-        return {
+        return [{
             'id':   u.id,
             'name': f"{u.first_name} {u.last_name}".strip() or u.username,
             'role': u.get_role_display(),
-        }
+        }]
 
     def get_can_fire(self, obj):
         return obj.status == 'overdue' and not obj.is_fired

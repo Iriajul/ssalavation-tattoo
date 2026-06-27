@@ -463,7 +463,6 @@ class DistrictManagerTaskDetailView(APIView):
         serializer = TaskUpdateSerializer(task, data=data, partial=True)
         serializer.is_valid(raise_exception=True)
         task = serializer.save()
-        all_tasks = [task]
 
         # Create new tasks for additional users
         for emp_id in emp_ids[1:]:
@@ -491,7 +490,14 @@ class DistrictManagerTaskDetailView(APIView):
                 message=f"{request.user.get_full_name() or 'Manager'} assigned you '{new_task.title}'",
                 task=new_task,
             )
-            all_tasks.append(new_task)
+
+        all_tasks = Task.objects.select_related(
+            'assigned_to', 'location', 'completed_by', 'created_by'
+        ).filter(
+            title=task.title,
+            location=task.location,
+            due_date=task.due_date,
+        ).order_by('created_at')
 
         return Response({
             'message': 'Task updated successfully.',

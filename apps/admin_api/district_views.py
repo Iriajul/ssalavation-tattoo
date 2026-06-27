@@ -493,13 +493,8 @@ class DistrictManagerTaskDetailView(APIView):
             )
             all_tasks.append(new_task)
 
-        if len(all_tasks) == 1:
-            return Response({
-                'message': 'Task updated successfully.',
-                'task':    TaskDetailSerializer(task).data,
-            }, status=status.HTTP_200_OK)
         return Response({
-            'message': f'Task updated and {len(all_tasks) - 1} new task(s) created for additional users.',
+            'message': 'Task updated successfully.',
             'tasks':   TaskDetailSerializer(all_tasks, many=True).data,
         }, status=status.HTTP_200_OK)
 

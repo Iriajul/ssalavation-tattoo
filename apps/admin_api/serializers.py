@@ -427,9 +427,9 @@ class TaskDetailSerializer(serializers.ModelSerializer):
     def get_assigned_to(self, obj):
         u = obj.assigned_to
         if not u:
-            return None
-        return {'id': u.id, 'name': f"{u.first_name} {u.last_name}".strip(),
-                'email': u.email, 'role': u.role, 'role_display': u.get_role_display()}
+            return []
+        return [{'id': u.id, 'name': f"{u.first_name} {u.last_name}".strip(),
+                 'email': u.email, 'role': u.role, 'role_display': u.get_role_display()}]
 
     def get_can_fire(self, obj):
         return obj.status == 'overdue' and not obj.is_fired

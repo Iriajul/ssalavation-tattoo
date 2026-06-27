@@ -429,6 +429,12 @@ class DistrictManagerTaskDetailView(APIView):
     def _get_loc_ids(self):
         return list(get_active_locations().values_list('id', flat=True))
 
+    def get(self, request, pk):
+        task = self._get_task(pk, self._get_loc_ids())
+        if not task:
+            return Response({'error': 'Task not found.'}, status=status.HTTP_404_NOT_FOUND)
+        return Response(TaskDetailSerializer(task).data, status=status.HTTP_200_OK)
+
     def patch(self, request, pk):
         task = self._get_task(pk, self._get_loc_ids())
         if not task:

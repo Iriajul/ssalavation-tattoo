@@ -105,6 +105,8 @@ else
     echo "  Python-only change — restarting backend only (db keeps running)..."
     docker compose up -d 2>/dev/null || true
     docker compose restart backend
+    echo "  Waiting for backend to be ready..."
+    until docker compose exec -T backend echo "ready" 2>/dev/null; do sleep 1; done
     ok "Backend restarted"
 fi
 

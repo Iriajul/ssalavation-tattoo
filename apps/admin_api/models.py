@@ -106,14 +106,6 @@ class UserWorkSchedule(models.Model):
 
 class Task(models.Model):
 
-    class Status(models.TextChoices):
-        PENDING         = 'pending',         'Pending'
-        COMPLETED       = 'completed',       'Completed'
-        AWAITING_REVIEW = 'awaiting_review', 'Awaiting Review'
-        APPROVED        = 'approved',        'Approved'
-        REJECTED        = 'rejected',        'Rejected'
-        OVERDUE         = 'overdue',         'Overdue'
-
     class Frequency(models.TextChoices):
         NONE    = 'none',    'None'
         DAILY   = 'daily',   'Daily'
@@ -124,90 +116,74 @@ class Task(models.Model):
 
     title       = models.CharField(max_length=255)
     description = models.TextField(blank=True, null=True)
-    location    = models.ForeignKey(
-        Location,
-        on_delete=models.CASCADE,
-        related_name='tasks'
-    )
-    assigned_to = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
-        related_name='assigned_tasks',
-        null=True, blank=True,
-    )
+    location    = models.ForeignKey(Location, on_delete=models.CASCADE, related_name='tasks')
     created_by  = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True, blank=True,
-        related_name='created_tasks'
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='created_tasks'
     )
-    due_date     = models.DateField()
-    status       = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
-    is_fired     = models.BooleanField(default=False)
-    is_recurring = models.BooleanField(default=False)
-    frequency    = models.CharField(max_length=10, choices=Frequency.choices, default=Frequency.NONE)
-
+    due_date       = models.DateField()
+    is_recurring   = models.BooleanField(default=False)
+    frequency      = models.CharField(max_length=10, choices=Frequency.choices, default=Frequency.NONE)
     requires_photo = models.BooleanField(default=False)
-    photo_url      = models.URLField(blank=True, null=True)
-
-    completed_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True, blank=True,
-        related_name='completed_tasks'
-    )
-    completed_at     = models.DateTimeField(null=True, blank=True)
-    approved_by      = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True, blank=True,
-        related_name='approved_tasks'
-    )
-    approved_at      = models.DateTimeField(null=True, blank=True)
-    rejection_reason = models.TextField(blank=True, null=True)
-    rejected_by      = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True, blank=True,
-        related_name='rejected_tasks'
-    )
-    rejected_at = models.DateTimeField(null=True, blank=True)
-    created_at  = models.DateTimeField(auto_now_add=True)
-    updated_at  = models.DateTimeField(auto_now=True)
+    created_at     = models.DateTimeField(auto_now_add=True)
+    updated_at     = models.DateTimeField(auto_now=True)
 
     class Meta:
         db_table = 'tasks'
         ordering = ['-created_at']
-        constraints = [
-            models.CheckConstraint(
-                condition=(
-                    Q(status__in=['pending', 'rejected', 'overdue']) |
-                    (
-                        Q(completed_at__isnull=False) &
-                        Q(completed_by__isnull=False)
-                    )
-                ),
-                name='task_completion_requires_data'
-            ),
-            models.CheckConstraint(
-                condition=(
-                    ~Q(status='rejected') |
-                    Q(rejection_reason__isnull=False)
-                ),
-                name='task_rejection_requires_reason'
-            ),
-        ]
         indexes = [
-            models.Index(fields=['status'],               name='task_status_idx'),
-            models.Index(fields=['location'],             name='task_location_idx'),
-            models.Index(fields=['created_at'],           name='task_created_at_idx'),
-            models.Index(fields=['due_date'],             name='task_due_date_idx'),
-            models.Index(fields=['location', 'status'],   name='task_location_status_idx'),
-            models.Index(fields=['status', 'created_at'], name='task_status_created_idx'),
+            models.Index(fields=['location'],   name='task_location_idx'),
+            models.Index(fields=['created_at'], name='task_created_at_idx'),
+            models.Index(fields=['due_date'],   name='task_due_date_idx'),
         ]
 
     def __str__(self):
         return self.title
+
+
+class TaskAssignment(models.Model):
+
+    class Status(models.TextChoices):
+        PENDING         = 'pending',         'Pending'
+        AWAITING_REVIEW = 'awaiting_review', 'Awaiting Review'
+        APPROVED        = 'approved',        'Approved'
+        REJECTED        = 'rejected',        'Rejected'
+        OVERDUE         = 'overdue',         'Overdue'
+
+    task     = models.ForeignKey(Task, on_delete=models.CASCADE, related_name='assignments')
+    employee = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='task_assignments'
+    )
+    status           = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
+    is_fired         = models.BooleanField(default=False)
+    photo_url        = models.URLField(blank=True, null=True)
+    completed_at     = models.DateTimeField(null=True, blank=True)
+    approved_by      = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='approved_assignments'
+    )
+    approved_at      = models.DateTimeField(null=True, blank=True)
+    rejection_reason = models.TextField(blank=True, null=True)
+    rejected_by      = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='rejected_assignments'
+    )
+    rejected_at  = models.DateTimeField(null=True, blank=True)
+    created_at   = models.DateTimeField(auto_now_add=True)
+    updated_at   = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table        = 'task_assignments'
+        unique_together = [('task', 'employee')]
+        ordering        = ['created_at']
+        indexes = [
+            models.Index(fields=['status'],             name='ta_status_idx'),
+            models.Index(fields=['task', 'status'],     name='ta_task_status_idx'),
+            models.Index(fields=['employee', 'status'], name='ta_emp_status_idx'),
+        ]
+
+    def __str__(self):
+        return f"{self.employee_id} → {self.task_id} [{self.status}]"
 
 
 # ================================================================

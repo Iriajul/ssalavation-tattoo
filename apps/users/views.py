@@ -13,7 +13,7 @@ from rest_framework_simplejwt.tokens import RefreshToken, UntypedToken
 from rest_framework_simplejwt.exceptions import InvalidToken
 from rest_framework.decorators import action
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
-from apps.admin_api.models import Attendance, Instruction, QRSession, Task, UserWorkSchedule, ActivityLog
+from apps.admin_api.models import Attendance, Instruction, QRSession, TaskAssignment, UserWorkSchedule, ActivityLog
 from apps.admin_api.utils import check_file_size
 from .models import AppNotification
 
@@ -412,18 +412,17 @@ class AppTodayAttendanceView(APIView):
 class AppTaskViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [IsAuthenticated]
     filter_backends    = [filters.SearchFilter]
-    search_fields      = ['title', 'description']
+    search_fields      = ['task__title', 'task__description']
 
     def get_queryset(self):
-        user     = self.request.user
-        queryset = Task.objects.filter(
-            assigned_to=user
+        user    = self.request.user
+        queryset = TaskAssignment.objects.filter(
+            employee=user
         ).select_related(
-            'created_by', 'location',
-            'completed_by', 'approved_by', 'rejected_by'
-        ).order_by('-created_at')
+            'task', 'task__created_by', 'task__location',
+            'approved_by', 'rejected_by'
+        ).order_by('-task__created_at')
 
-        # ── Status filter ─────────────────────────────────────────
         status_filter = self.request.query_params.get('status')
         if status_filter:
             queryset = queryset.filter(status=status_filter)
@@ -439,107 +438,65 @@ class AppTaskViewSet(viewsets.ReadOnlyModelViewSet):
         user     = request.user
         queryset = self.filter_queryset(self.get_queryset())
 
-        # ── Stats ─────────────────────────────────────────────────
-        all_tasks  = Task.objects.filter(assigned_to=user)
-        stats_data = all_tasks.aggregate(
+        stats_data = TaskAssignment.objects.filter(employee=user).aggregate(
             total           = Count('id'),
             pending         = Count(Case(When(status='pending',         then=1), output_field=IntegerField())),
             awaiting_review = Count(Case(When(status='awaiting_review', then=1), output_field=IntegerField())),
             approved        = Count(Case(When(status='approved',        then=1), output_field=IntegerField())),
             rejected        = Count(Case(When(status='rejected',        then=1), output_field=IntegerField())),
         )
-        stats = stats_data
-        
+
         page = self.paginate_queryset(queryset)
         if page is not None:
             serializer     = self.get_serializer(page, many=True)
             paginated_data = self.get_paginated_response(serializer.data)
-            return Response({
-                'stats': stats,
-                'tasks': paginated_data.data,
-            }, status=status.HTTP_200_OK)
+            return Response({'stats': stats_data, 'tasks': paginated_data.data}, status=status.HTTP_200_OK)
 
-        serializer = self.get_serializer(queryset, many=True)
-        return Response({
-            'stats': stats,
-            'tasks': serializer.data,
-        }, status=status.HTTP_200_OK)
+        return Response({'stats': stats_data, 'tasks': self.get_serializer(queryset, many=True).data}, status=status.HTTP_200_OK)
 
     def retrieve(self, request, *args, **kwargs):
-        task = self.get_object()
-        return Response(
-            AppTaskDetailSerializer(task).data,
-            status=status.HTTP_200_OK
-        )
+        assignment = self.get_object()
+        return Response(AppTaskDetailSerializer(assignment).data, status=status.HTTP_200_OK)
 
-    @action(
-        detail=True,
-        methods=['post'],
-        url_path='complete',
-        parser_classes=[MultiPartParser, FormParser, JSONParser]
-    )
+    @action(detail=True, methods=['post'], url_path='complete', parser_classes=[MultiPartParser, FormParser, JSONParser])
     def complete(self, request, pk=None):
-        task = self.get_object()
-        user = request.user
+        assignment = self.get_object()
+        user       = request.user
 
-        # ── Only assigned employee can complete ───────────────────
-        if task.assigned_to_id != user.id:
-            return Response(
-                {"error": "You can only complete tasks assigned to you."},
-                status=status.HTTP_403_FORBIDDEN
-            )
+        if assignment.employee_id != user.id:
+            return Response({"error": "You can only complete tasks assigned to you."}, status=status.HTTP_403_FORBIDDEN)
 
-        # ── Only pending or rejected tasks can be completed ───────
-        if task.status not in ['pending', 'rejected']:
-            return Response(
-                {"error": "Only pending or rejected tasks can be completed."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+        if assignment.status not in ['pending', 'rejected']:
+            return Response({"error": "Only pending or rejected tasks can be completed."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # ── Photo required check ──────────────────────────────────
+        task = assignment.task
+
         if task.requires_photo:
             photo = request.FILES.get('photo')
             if not photo:
-                return Response(
-                    {"error": "A photo is required to complete this task."},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
+                return Response({"error": "A photo is required to complete this task."}, status=status.HTTP_400_BAD_REQUEST)
             err = check_file_size(photo)
             if err:
                 return err
-            # ── Upload to Cloudinary ──────────────────────────────
             import cloudinary.uploader
-            result        = cloudinary.uploader.upload(
-                photo,
-                folder='task_photos/',
-                chunk_size = 6000000,
-            )
-            task.photo_url = result['secure_url']
+            result = cloudinary.uploader.upload(photo, folder='task_photos/', chunk_size=6000000)
+            assignment.photo_url = result['secure_url']
 
-        # ── Mark as completed ─────────────────────────────────────
-        task.status       = 'awaiting_review'   # ← change this
-        task.completed_by = user
-        task.completed_at = timezone.now()
-        task.save(update_fields=[
-            'status', 'completed_by', 'completed_at', 'photo_url'
-        ])
+        assignment.status       = 'awaiting_review'
+        assignment.completed_at = timezone.now()
+        assignment.save(update_fields=['status', 'completed_at', 'photo_url'])
 
-        # ── Log activity ──────────────────────────────────────────
-        from apps.admin_api.models import ActivityLog
         ActivityLog.objects.create(
-            action      = 'task_completed',
-            actor       = user,
-            task        = task,
-            target_user = user,
-            message     = f'{user.get_full_name()} completed "{task.title}"'
+            action='task_completed', actor=user, task=task, target_user=user,
+            message=f'{user.get_full_name()} completed "{task.title}"'
         )
 
         return Response({
-            "message":   "Task submitted for review.",   # ← update message
+            "message":   "Task submitted for review.",
             "task_id":   task.id,
             "title":     task.title,
-            "status":    task.status,                    # will now return 'awaiting_review'
-            "photo_url": task.photo_url,
+            "status":    assignment.status,
+            "photo_url": assignment.photo_url,
         }, status=status.HTTP_200_OK)
 
 
@@ -567,21 +524,18 @@ class AppInstructionViewSet(viewsets.ReadOnlyModelViewSet):
 class AppTaskHistoryViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [IsAuthenticated]
     filter_backends    = [filters.SearchFilter]
-    search_fields      = ['title', 'description']
+    search_fields      = ['task__title', 'task__description']
 
     def get_queryset(self):
         user     = self.request.user
-        # ── Show only tasks that are NOT pending (completed/reviewed/rejected) ──
-        queryset = Task.objects.filter(
-            assigned_to=user
+        queryset = TaskAssignment.objects.filter(
+            employee=user
         ).exclude(
             status='pending'
         ).select_related(
-            'created_by', 'location',
-            'completed_by', 'approved_by', 'rejected_by'
+            'task', 'task__created_by', 'approved_by', 'rejected_by'
         ).order_by('-completed_at')
 
-        # ── Status filter ─────────────────────────────────────────
         status_filter = self.request.query_params.get('status')
         if status_filter:
             queryset = queryset.filter(status=status_filter)
@@ -597,33 +551,20 @@ class AppTaskHistoryViewSet(viewsets.ReadOnlyModelViewSet):
         user     = request.user
         queryset = self.filter_queryset(self.get_queryset())
 
-        # ── Stats: count tasks by status ──────────────────────────
-        all_history_tasks = Task.objects.filter(
-            assigned_to=user
-        ).exclude(status='pending')
-        
-        stats_data = all_history_tasks.aggregate(
+        stats_data = TaskAssignment.objects.filter(employee=user).exclude(status='pending').aggregate(
             total           = Count('id'),
             awaiting_review = Count(Case(When(status='awaiting_review', then=1), output_field=IntegerField())),
             approved        = Count(Case(When(status='approved',        then=1), output_field=IntegerField())),
             rejected        = Count(Case(When(status='rejected',        then=1), output_field=IntegerField())),
         )
-        stats = stats_data
-        
+
         page = self.paginate_queryset(queryset)
         if page is not None:
             serializer     = self.get_serializer(page, many=True)
             paginated_data = self.get_paginated_response(serializer.data)
-            return Response({
-                'stats': stats,
-                'tasks': paginated_data.data,
-            }, status=status.HTTP_200_OK)
+            return Response({'stats': stats_data, 'tasks': paginated_data.data}, status=status.HTTP_200_OK)
 
-        serializer = self.get_serializer(queryset, many=True)
-        return Response({
-            'stats': stats,
-            'tasks': serializer.data,
-        }, status=status.HTTP_200_OK)
+        return Response({'stats': stats_data, 'tasks': self.get_serializer(queryset, many=True).data}, status=status.HTTP_200_OK)
 
     def retrieve(self, request, *args, **kwargs):
         task = self.get_object()
@@ -645,7 +586,7 @@ class AppProfileView(APIView):
         today = timezone.localdate()
 
         # ── Task stats ────────────────────────────────────────────
-        stats = Task.objects.filter(assigned_to=user).aggregate(
+        stats = TaskAssignment.objects.filter(employee=user).aggregate(
             completed = Count(Case(When(status='approved',         then=1), output_field=IntegerField())),
             approved  = Count(Case(When(status='awaiting_review',  then=1), output_field=IntegerField())),
             pending   = Count(Case(When(status='pending',          then=1), output_field=IntegerField())),
@@ -695,9 +636,9 @@ class AppPerformanceView(APIView):
             start_date = today - timedelta(days=6)
 
         # ── Task stats for period ─────────────────────────────────
-        period_tasks = Task.objects.filter(
-            assigned_to = user,
-            created_at__date__gte = start_date,
+        period_tasks = TaskAssignment.objects.filter(
+            employee = user,
+            task__created_at__date__gte = start_date,
         )
 
         stats = period_tasks.aggregate(
@@ -739,15 +680,15 @@ class AppPerformanceView(APIView):
         attendance_rate = min(attendance_rate, 100)
 
         # ── Bar chart — daily task trend ──────────────────────────
-        chart_rows = Task.objects.filter(
-            assigned_to       = user,
-            created_at__date__gte = start_date,
-            created_at__date__lte = today,
-        ).values('created_at__date').annotate(
+        chart_rows = TaskAssignment.objects.filter(
+            employee = user,
+            task__created_at__date__gte = start_date,
+            task__created_at__date__lte = today,
+        ).values('task__created_at__date').annotate(
             completed = Count(Case(When(status='approved', then=1), output_field=IntegerField())),
             pending   = Count(Case(When(status='pending',  then=1), output_field=IntegerField())),
         )
-        chart_map = {row['created_at__date']: row for row in chart_rows}
+        chart_map = {row['task__created_at__date']: row for row in chart_rows}
 
         trend = []
         total_days = (today - start_date).days + 1
@@ -847,10 +788,10 @@ class AppHomeView(APIView):
             }
 
         # ── Today's tasks ─────────────────────────────────────────
-        today_tasks = Task.objects.filter(
-            assigned_to = user,
-            due_date    = today,
-        ).select_related('created_by', 'location').order_by('due_date')
+        today_tasks = TaskAssignment.objects.filter(
+            employee         = user,
+            task__due_date   = today,
+        ).select_related('task', 'task__created_by').order_by('task__due_date')
 
         task_stats = today_tasks.aggregate(
             total     = Count('id'),
@@ -859,14 +800,15 @@ class AppHomeView(APIView):
         )
 
         # One upcoming pending task preview
-        upcoming_task = today_tasks.filter(status='pending').first()
-        upcoming_task_data = None
-        if upcoming_task:
+        upcoming_assignment = today_tasks.filter(status='pending').first()
+        upcoming_task_data  = None
+        if upcoming_assignment:
+            t = upcoming_assignment.task
             upcoming_task_data = {
-                'id':       upcoming_task.id,
-                'title':    upcoming_task.title,
-                'due_date': upcoming_task.due_date.strftime('%b %d, %Y'),
-                'status':   upcoming_task.status,
+                'id':       upcoming_assignment.id,
+                'title':    t.title,
+                'due_date': t.due_date.strftime('%b %d, %Y'),
+                'status':   upcoming_assignment.status,
             }
 
         return Response({

@@ -7,7 +7,7 @@ from django.contrib.auth import get_user_model
 from django.db.models import Count, Case, When, IntegerField, Q
 from django.utils import timezone
 from datetime import datetime, time, timedelta, date
-from .models import Location, Task, Attendance, UserWorkSchedule, ActivityLog
+from .models import Location, Task, TaskAssignment, Attendance, UserWorkSchedule, ActivityLog
 from apps.users.models import AppNotification
 from .permissions import IsDistrictManager
 from .utils import check_file_size
@@ -15,9 +15,12 @@ from .serializers import (
     TaskDetailSerializer,
     TaskCreateSerializer,
     TaskUpdateSerializer,
+    TaskApproveSerializer,
+    TaskRejectSerializer,
     TaskListSerializer,
     AdminChangePasswordSerializer
 )
+from django.db.models import Prefetch
 
 User = get_user_model()
 
@@ -345,20 +348,20 @@ class DistrictManagerTaskView(APIView):
         location_filter = request.query_params.get('location')
         search          = request.query_params.get('search', '').strip()
 
-        locations = get_active_locations()           # FIX 3
+        locations = get_active_locations()
         loc_ids   = list(locations.values_list('id', flat=True))
 
-        # FIX 4: validate location_filter
         if location_filter and not locations.filter(id=location_filter).exists():
             return Response({'error': 'Invalid location.'}, status=status.HTTP_400_BAD_REQUEST)
 
         task_qs = (
             Task.objects
-            .filter(status='pending', location_id__in=loc_ids)
-            .select_related(
-                'assigned_to', 'location', 'completed_by',
-                'approved_by', 'rejected_by', 'created_by'
+            .filter(location_id__in=loc_ids, assignments__status='pending')
+            .select_related('location', 'created_by')
+            .prefetch_related(
+                Prefetch('assignments', queryset=TaskAssignment.objects.select_related('employee', 'approved_by', 'rejected_by'))
             )
+            .distinct()
             .order_by('-created_at')
         )
 
@@ -367,15 +370,13 @@ class DistrictManagerTaskView(APIView):
 
         if search:
             task_qs = task_qs.filter(
-                Q(title__icontains=search)                   |
-                Q(description__icontains=search)             |
-                Q(assigned_to__first_name__icontains=search) |
-                Q(assigned_to__last_name__icontains=search)
-            )
+                Q(title__icontains=search) |
+                Q(description__icontains=search) |
+                Q(assignments__employee__first_name__icontains=search) |
+                Q(assignments__employee__last_name__icontains=search)
+            ).distinct()
 
-        stats_qs = Task.objects.filter(location_id__in=loc_ids)
-
-        stats = stats_qs.aggregate(
+        stats = TaskAssignment.objects.filter(task__location_id__in=loc_ids).aggregate(
             total   = Count('id'),
             pending = Count(Case(When(status='pending', then=1), output_field=IntegerField())),
             overdue = Count(Case(When(status='overdue', then=1), output_field=IntegerField())),
@@ -388,46 +389,27 @@ class DistrictManagerTaskView(APIView):
         paginated           = paginator.get_paginated_response(serializer.data).data
 
         return Response({
-            'stats': {
-                'total':   stats['total'],
-                'pending': stats['pending'],
-                'overdue': stats['overdue'],
-            },
+            'stats': {'total': stats['total'], 'pending': stats['pending'], 'overdue': stats['overdue']},
             'tasks':      paginated['results'],
-            'tasks_meta': {
-                'count':    paginated['count'],
-                'next':     paginated['next'],
-                'previous': paginated['previous'],
-            },
+            'tasks_meta': {'count': paginated['count'], 'next': paginated['next'], 'previous': paginated['previous']},
         }, status=status.HTTP_200_OK)
 
     def post(self, request):
-        raw     = request.data.get('assigned_to')
-        emp_ids = raw if isinstance(raw, list) else [raw]
+        data = request.data.copy()
+        raw  = data.get('assigned_to')
+        if not isinstance(raw, list):
+            data['assigned_to'] = [raw] if raw is not None else []
 
-        created_tasks = []
-        for emp_id in emp_ids:
-            data       = {**request.data, 'assigned_to': emp_id}
-            serializer = TaskCreateSerializer(data=data)
-            serializer.is_valid(raise_exception=True)
-            task = serializer.save(created_by=request.user)
-            AppNotification.objects.create(
-                recipient=task.assigned_to, notif_type='task_assigned',
-                title='New Task Assigned',
-                message=f"{request.user.get_full_name() or 'District Manager'} assigned you '{task.title}'",
-                task=task,
-            )
-            created_tasks.append(task)
+        serializer = TaskCreateSerializer(data=data)
+        serializer.is_valid(raise_exception=True)
+        task = serializer.save(created_by=request.user)
 
-        if len(created_tasks) == 1:
-            return Response({
-                'message': 'Task created successfully.',
-                'task':    TaskDetailSerializer(created_tasks[0]).data,
-            }, status=status.HTTP_201_CREATED)
-        return Response({
-            'message': f'{len(created_tasks)} tasks created successfully.',
-            'tasks':   TaskDetailSerializer(created_tasks, many=True).data,
-        }, status=status.HTTP_201_CREATED)
+        for assignment in task.assignments.select_related('employee').all():
+            emp = assignment.employee
+            ActivityLog.objects.create(action='task_assigned', actor=request.user, task=task, target_user=emp, message=f'Task "{task.title}" assigned to {emp.get_full_name()}')
+            AppNotification.objects.create(recipient=emp, notif_type='task_assigned', title='New Task Assigned', message=f"{request.user.get_full_name() or 'District Manager'} assigned you '{task.title}'", task=task)
+
+        return Response({'message': 'Task created successfully.', 'task': TaskDetailSerializer(task).data}, status=status.HTTP_201_CREATED)
 
 # ================================================================
 # DISTRICT MANAGER — TASK DETAIL
@@ -438,78 +420,49 @@ class DistrictManagerTaskDetailView(APIView):
 
     def _get_task(self, pk, loc_ids):
         try:
-            return Task.objects.select_related(
-                'assigned_to', 'location', 'created_by'
+            return Task.objects.select_related('location', 'created_by').prefetch_related(
+                Prefetch('assignments', queryset=TaskAssignment.objects.select_related('employee', 'approved_by', 'rejected_by'))
             ).get(pk=pk, location_id__in=loc_ids)
         except Task.DoesNotExist:
             return None
 
     def _get_loc_ids(self):
-        return list(get_active_locations().values_list('id', flat=True))  # FIX 3
+        return list(get_active_locations().values_list('id', flat=True))
 
     def patch(self, request, pk):
         task = self._get_task(pk, self._get_loc_ids())
         if not task:
             return Response({'error': 'Task not found.'}, status=status.HTTP_404_NOT_FOUND)
-        if task.status != 'pending':
-            return Response({'error': 'Only pending tasks can be edited.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        data    = request.data.copy()
-        raw     = data.get('assigned_to')
-        emp_ids = raw if isinstance(raw, list) else [raw]
+        data = request.data.copy()
+        raw  = data.get('assigned_to')
+        if raw is not None:
+            data['assigned_to'] = raw if isinstance(raw, list) else [raw]
 
-        # Update existing task with first user
-        data['assigned_to'] = emp_ids[0]
-        serializer = TaskUpdateSerializer(task, data=data, partial=True)
+        serializer = TaskUpdateSerializer(data=data, context={'task': task})
         serializer.is_valid(raise_exception=True)
-        task = serializer.save()
+        vd = serializer.validated_data
 
-        # Create new tasks for additional users
-        for emp_id in emp_ids[1:]:
-            new_data = {
-                'title':          task.title,
-                'description':    task.description,
-                'location':       task.location_id,
-                'due_date':       str(task.due_date),
-                'is_recurring':   task.is_recurring,
-                'frequency':      task.frequency,
-                'requires_photo': task.requires_photo,
-                'assigned_to':    emp_id,
-            }
-            create_serializer = TaskCreateSerializer(data=new_data)
-            create_serializer.is_valid(raise_exception=True)
-            new_task = create_serializer.save(created_by=request.user)
-            ActivityLog.objects.create(
-                action='task_assigned', actor=request.user, task=new_task,
-                target_user=new_task.assigned_to,
-                message=f'Task "{new_task.title}" assigned to {new_task.assigned_to.get_full_name()}'
-            )
-            AppNotification.objects.create(
-                recipient=new_task.assigned_to, notif_type='task_assigned',
-                title='New Task Assigned',
-                message=f"{request.user.get_full_name() or 'Manager'} assigned you '{new_task.title}'",
-                task=new_task,
-            )
+        for field in ['title', 'description', 'due_date', 'is_recurring', 'frequency', 'requires_photo']:
+            if field in vd:
+                setattr(task, field, vd[field])
+        task.save()
 
-        all_tasks = Task.objects.select_related(
-            'assigned_to', 'location', 'completed_by', 'created_by'
-        ).filter(
-            title=task.title,
-            location=task.location,
-            due_date=task.due_date,
-        ).order_by('created_at')
+        for emp in vd.get('_employees', []):
+            assignment, created = TaskAssignment.objects.get_or_create(task=task, employee=emp)
+            if created:
+                ActivityLog.objects.create(action='task_assigned', actor=request.user, task=task, target_user=emp, message=f'Task "{task.title}" assigned to {emp.get_full_name()}')
+                AppNotification.objects.create(recipient=emp, notif_type='task_assigned', title='New Task Assigned', message=f"{request.user.get_full_name() or 'District Manager'} assigned you '{task.title}'", task=task)
 
-        return Response({
-            'message': 'Task updated successfully.',
-            'tasks':   TaskDetailSerializer(all_tasks, many=True).data,
-        }, status=status.HTTP_200_OK)
+        task.refresh_from_db()
+        return Response({'message': 'Task updated successfully.', 'task': TaskDetailSerializer(task).data}, status=status.HTTP_200_OK)
 
     def delete(self, request, pk):
         task = self._get_task(pk, self._get_loc_ids())
         if not task:
             return Response({'error': 'Task not found.'}, status=status.HTTP_404_NOT_FOUND)
-        if task.status != 'pending':
-            return Response({'error': 'Only pending tasks can be deleted.'}, status=status.HTTP_400_BAD_REQUEST)
+        if task.assignments.exclude(status='pending').exists():
+            return Response({'error': 'Cannot delete a task that has been started by employees.'}, status=status.HTTP_400_BAD_REQUEST)
         task.delete()
         return Response({'message': 'Task deleted successfully.'}, status=status.HTTP_200_OK)
 
@@ -565,16 +518,14 @@ class DistrictManagerVerificationView(APIView):
         if location_filter and not locations.filter(id=location_filter).exists():
             return Response({'error': 'Invalid location.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        base_tasks = Task.objects.filter(
-            location_id__in=loc_ids
-        ).select_related(
-            'assigned_to', 'location', 'approved_by', 'rejected_by', 'created_by'
-        )
+        base_qs = TaskAssignment.objects.filter(
+            task__location_id__in=loc_ids
+        ).select_related('task', 'task__created_by', 'task__location', 'employee', 'approved_by', 'rejected_by')
 
         if location_filter:
-            base_tasks = base_tasks.filter(location_id=location_filter)
+            base_qs = base_qs.filter(task__location_id=location_filter)
 
-        stats_data = base_tasks.aggregate(
+        stats_data = base_qs.aggregate(
             awaiting_review = Count(Case(When(status='awaiting_review', then=1), output_field=IntegerField())),
             approved        = Count(Case(When(status='approved',        then=1), output_field=IntegerField())),
             pending         = Count(Case(When(status='pending',         then=1), output_field=IntegerField())),
@@ -582,59 +533,49 @@ class DistrictManagerVerificationView(APIView):
             rejected        = Count(Case(When(status='rejected',        then=1), output_field=IntegerField())),
         )
 
-        TAB_STATUS_MAP  = {
-            'pending':         'pending',
-            'awaiting_review': 'awaiting_review',
-            'approved':        'approved',
-            'rejected':        'rejected',
-            'overdue':         'overdue',
-        }
-        selected_status = TAB_STATUS_MAP.get(tab, 'awaiting_review')
-        tasks           = base_tasks.filter(status=selected_status).order_by('-created_at')
+        selected_status = tab if tab in ['pending', 'awaiting_review', 'approved', 'rejected', 'overdue'] else 'awaiting_review'
+        assignments     = base_qs.filter(status=selected_status).order_by('-task__created_at')
 
         paginator           = PageNumberPagination()
         paginator.page_size = 10
-        page                = paginator.paginate_queryset(tasks, request)
+        page                = paginator.paginate_queryset(assignments, request)
 
         data = []
-        for task in page:
+        for a in page:
+            task = a.task
             data.append({
                 'id':             task.id,
+                'assignment_id':  a.id,
                 'title':          task.title,
                 'description':    task.description,
                 'requires_photo': task.requires_photo,
-                'photo_url':      task.photo_url,
-                'status':         task.status,
+                'photo_url':      a.photo_url,
+                'status':         a.status,
                 'due_date':       task.due_date,
-                'location': {
-                    'id':   task.location.id,
-                    'name': task.location.name,
-                } if task.location else None,
+                'location': {'id': task.location.id, 'name': task.location.name} if task.location else None,
                 'created_by': {
                     'id':   task.created_by.id   if task.created_by else None,
                     'name': f"{task.created_by.first_name} {task.created_by.last_name}".strip() if task.created_by else None,
                     'role': task.created_by.get_role_display() if task.created_by else None,
                 },
                 'assigned_to': {
-                    'id': task.assigned_to.id, 'name': f"{task.assigned_to.first_name} {task.assigned_to.last_name}".strip(),
-                    'email': task.assigned_to.email, 'role': task.assigned_to.role, 'role_display': task.assigned_to.get_role_display(),
-                } if task.assigned_to else None,
-                'submitted_at':     task.completed_at.strftime('%b %d, %I:%M %p') if task.completed_at else None,
+                    'id': a.employee.id, 'name': f"{a.employee.first_name} {a.employee.last_name}".strip(),
+                    'email': a.employee.email, 'role': a.employee.role, 'role_display': a.employee.get_role_display(),
+                },
+                'submitted_at':     a.completed_at.strftime('%b %d, %I:%M %p') if a.completed_at else None,
                 'created_at':       task.created_at,
-                'approved_by':      f"{task.approved_by.first_name} {task.approved_by.last_name}".strip() if task.approved_by else None,
-                'approved_at':      task.approved_at,
-                'rejected_by':      f"{task.rejected_by.first_name} {task.rejected_by.last_name}".strip() if task.rejected_by else None,
-                'rejected_at':      task.rejected_at,
-                'rejection_reason': task.rejection_reason,
+                'approved_by':      f"{a.approved_by.first_name} {a.approved_by.last_name}".strip() if a.approved_by else None,
+                'approved_at':      a.approved_at,
+                'rejected_by':      f"{a.rejected_by.first_name} {a.rejected_by.last_name}".strip() if a.rejected_by else None,
+                'rejected_at':      a.rejected_at,
+                'rejection_reason': a.rejection_reason,
             })
 
         return Response({
             'stats': stats_data,
             'tab':   tab,
             'tasks': paginator.get_paginated_response(data).data,
-            'filter_options': {
-                'locations': list(locations.values('id', 'name'))
-            },
+            'filter_options': {'locations': list(locations.values('id', 'name'))},
         }, status=status.HTTP_200_OK)
 
 
@@ -645,81 +586,49 @@ class DistrictManagerVerificationView(APIView):
 class DistrictManagerVerificationActionView(APIView):
     permission_classes = [IsDistrictManager]
 
-    def _get_task(self, pk, loc_ids):
+    def _get_assignment(self, task_pk, assignment_id, loc_ids):
         try:
-            return Task.objects.select_related('assigned_to').get(
-                pk=pk, location_id__in=loc_ids
+            return TaskAssignment.objects.select_related('task', 'employee').get(
+                pk=assignment_id, task_id=task_pk, task__location_id__in=loc_ids
             )
-        except Task.DoesNotExist:
+        except TaskAssignment.DoesNotExist:
             return None
 
     def post(self, request, pk, action):
-        loc_ids = list(get_active_locations().values_list('id', flat=True))  # FIX 3
-        task    = self._get_task(pk, loc_ids)
-
-        if not task:
+        loc_ids     = list(get_active_locations().values_list('id', flat=True))
+        task_exists = Task.objects.filter(pk=pk, location_id__in=loc_ids).exists()
+        if not task_exists:
             return Response({'error': 'Task not found.'}, status=status.HTTP_404_NOT_FOUND)
 
+        task = Task.objects.get(pk=pk)
+
         if action == 'approve':
-            if task.status not in ['awaiting_review', 'rejected']:
-                return Response(
-                    {'error': 'Only awaiting review or rejected tasks can be approved.'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            task.status           = 'approved'
-            task.approved_by      = request.user
-            task.approved_at      = timezone.now()
-            task.rejection_reason = None
-            task.save(update_fields=['status', 'approved_by', 'approved_at', 'rejection_reason'])
-
-            if task.assigned_to:
-                AppNotification.objects.create(
-                    recipient=task.assigned_to, notif_type='task_approved',
-                    title='Task Approved',
-                    message=f"Your '{task.title}' was approved by {request.user.get_full_name() or 'District Manager'}",
-                    task=task,
-                )
-
-            return Response({
-                'message': 'Task approved successfully.',
-                'task':    TaskDetailSerializer(task).data,
-            }, status=status.HTTP_200_OK)
+            s = TaskApproveSerializer(data=request.data)
+            s.is_valid(raise_exception=True)
+            assignment = self._get_assignment(pk, s.validated_data['assignment_id'], loc_ids)
+            if not assignment:
+                return Response({'error': 'Assignment not found.'}, status=status.HTTP_404_NOT_FOUND)
+            if assignment.status not in ['awaiting_review', 'rejected']:
+                return Response({'error': 'Only awaiting review or rejected assignments can be approved.'}, status=status.HTTP_400_BAD_REQUEST)
+            assignment.status = 'approved'; assignment.approved_by = request.user; assignment.approved_at = timezone.now(); assignment.rejection_reason = None
+            assignment.save(update_fields=['status', 'approved_by', 'approved_at', 'rejection_reason'])
+            emp = assignment.employee
+            AppNotification.objects.create(recipient=emp, notif_type='task_approved', title='Task Approved', message=f"Your '{task.title}' was approved by {request.user.get_full_name() or 'District Manager'}", task=task)
+            return Response({'message': 'Task approved successfully.', 'task': TaskDetailSerializer(task).data}, status=status.HTTP_200_OK)
 
         elif action == 'reject':
-            rejection_reason = request.data.get('rejection_reason', '').strip()
-            if not rejection_reason:
-                return Response(
-                    {'error': 'Rejection reason is required.'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            if len(rejection_reason) < 5:
-                return Response(
-                    {'error': 'Rejection reason must be at least 5 characters.'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            if task.status not in ['awaiting_review', 'approved']:
-                return Response(
-                    {'error': 'Only awaiting review or approved tasks can be rejected.'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            task.status           = 'rejected'
-            task.rejected_by      = request.user
-            task.rejected_at      = timezone.now()
-            task.rejection_reason = rejection_reason
-            task.save(update_fields=['status', 'rejected_by', 'rejected_at', 'rejection_reason'])
-
-            if task.assigned_to:
-                AppNotification.objects.create(
-                    recipient=task.assigned_to, notif_type='task_rejected',
-                    title='Task Needs Revision',
-                    message=f"'{task.title}' was rejected. {rejection_reason}",
-                    task=task,
-                )
-
-            return Response({
-                'message': 'Task rejected.',
-                'task':    TaskDetailSerializer(task).data,
-            }, status=status.HTTP_200_OK)
+            s = TaskRejectSerializer(data=request.data)
+            s.is_valid(raise_exception=True)
+            assignment = self._get_assignment(pk, s.validated_data['assignment_id'], loc_ids)
+            if not assignment:
+                return Response({'error': 'Assignment not found.'}, status=status.HTTP_404_NOT_FOUND)
+            if assignment.status not in ['awaiting_review', 'approved']:
+                return Response({'error': 'Only awaiting review or approved assignments can be rejected.'}, status=status.HTTP_400_BAD_REQUEST)
+            assignment.status = 'rejected'; assignment.rejected_by = request.user; assignment.rejected_at = timezone.now(); assignment.rejection_reason = s.validated_data['rejection_reason']
+            assignment.save(update_fields=['status', 'rejected_by', 'rejected_at', 'rejection_reason'])
+            emp = assignment.employee
+            AppNotification.objects.create(recipient=emp, notif_type='task_rejected', title='Task Needs Revision', message=f"'{task.title}' was rejected. {s.validated_data['rejection_reason']}", task=task)
+            return Response({'message': 'Task rejected.', 'task': TaskDetailSerializer(task).data}, status=status.HTTP_200_OK)
 
         return Response({'error': 'Invalid action. Use approve or reject.'}, status=status.HTTP_400_BAD_REQUEST)
     
@@ -787,31 +696,29 @@ class DistrictManagerReportsView(APIView):
         total_emp = len(all_emp_ids)
 
         # ── Bulk task stats per location — single query ───────────
-        # Period tasks (for charts)
         period_task_rows = (
-            Task.objects
-            .filter(location_id__in=location_ids, created_at__gte=start_date)
-            .values('location_id')
+            TaskAssignment.objects
+            .filter(task__location_id__in=location_ids, task__created_at__gte=start_date)
+            .values('task__location_id')
             .annotate(
                 total     = Count('id'),
-                completed = Count(Case(When(status__in=['completed', 'approved'], then=1), output_field=IntegerField())),
-                overdue   = Count(Case(When(status='overdue', then=1), output_field=IntegerField())),
+                completed = Count(Case(When(status='approved', then=1), output_field=IntegerField())),
+                overdue   = Count(Case(When(status='overdue',  then=1), output_field=IntegerField())),
             )
         )
-        period_task_map = {row['location_id']: row for row in period_task_rows}
+        period_task_map = {row['task__location_id']: row for row in period_task_rows}
 
-        # All-time tasks (for summary table)
         alltime_task_rows = (
-            Task.objects
-            .filter(location_id__in=location_ids)
-            .values('location_id')
+            TaskAssignment.objects
+            .filter(task__location_id__in=location_ids)
+            .values('task__location_id')
             .annotate(
                 total     = Count('id'),
-                completed = Count(Case(When(status__in=['completed', 'approved'], then=1), output_field=IntegerField())),
-                overdue   = Count(Case(When(status='overdue', then=1), output_field=IntegerField())),
+                completed = Count(Case(When(status='approved', then=1), output_field=IntegerField())),
+                overdue   = Count(Case(When(status='overdue',  then=1), output_field=IntegerField())),
             )
         )
-        alltime_task_map = {row['location_id']: row for row in alltime_task_rows}
+        alltime_task_map = {row['task__location_id']: row for row in alltime_task_rows}
 
         # Global task stats
         total_tasks     = sum(r['total']     for r in period_task_map.values())

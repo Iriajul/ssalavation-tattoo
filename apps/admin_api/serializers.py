@@ -4,7 +4,7 @@ from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 from django.contrib.auth.password_validation import validate_password
-from .models import FAQ, Attendance, Location, QRSession, SplashScreen, UserWorkSchedule, Task, Instruction, AdminNotification
+from .models import FAQ, Attendance, Location, QRSession, SplashScreen, UserWorkSchedule, Task, TaskAssignment, Instruction, AdminNotification
 
 User = get_user_model()
 
@@ -338,255 +338,257 @@ class UserStatsSerializer(serializers.Serializer):
 class TaskUserSerializer(serializers.ModelSerializer):
     role_display  = serializers.CharField(source='get_role_display', read_only=True)
     location_name = serializers.CharField(source='location.name',    read_only=True)
- 
+
     class Meta:
         model  = User
         fields = ['id', 'first_name', 'last_name', 'username', 'email', 'role', 'role_display', 'location_name']
- 
- 
+
 
 # ================================================================
-# TASK SERIALIZERS — UPDATED
+# TASK ASSIGNMENT SERIALIZER
 # ================================================================
- 
-class TaskListSerializer(serializers.ModelSerializer):
-    """Lightweight serializer for task list table"""
-    assigned_to       = serializers.SerializerMethodField()
-    completed_by_name = serializers.SerializerMethodField()
-    completed_by_role = serializers.SerializerMethodField()
-    location_name     = serializers.CharField(source='location.name', read_only=True)
-    can_fire          = serializers.SerializerMethodField()
+
+class TaskAssignmentSerializer(serializers.ModelSerializer):
+    employee       = serializers.SerializerMethodField()
+    approved_by    = TaskUserSerializer(read_only=True)
+    rejected_by    = TaskUserSerializer(read_only=True)
+    status_display = serializers.SerializerMethodField()
+    can_fire       = serializers.SerializerMethodField()
 
     class Meta:
-        model  = Task
+        model  = TaskAssignment
         fields = [
-            'id', 'title', 'description',
-            'location', 'location_name',
-            'assigned_to',
-            'due_date', 'status',
-            'is_recurring', 'frequency',
-            'requires_photo',
-            'completed_by', 'completed_by_name', 'completed_by_role',
-            'is_fired',
-            'can_fire',
+            'id', 'employee', 'status', 'status_display',
+            'is_fired', 'can_fire', 'photo_url',
+            'completed_at', 'approved_by', 'approved_at',
+            'rejected_by',  'rejected_at', 'rejection_reason',
             'created_at',
         ]
 
-    def get_assigned_to(self, obj):
-        if not obj.assigned_to:
-            return []
-        u = obj.assigned_to
-        return [{
-            'id':   u.id,
-            'name': f"{u.first_name} {u.last_name}".strip() or u.username,
-            'role': u.get_role_display(),
-        }]
+    def get_employee(self, obj):
+        u = obj.employee
+        return {
+            'id':           u.id,
+            'name':         f"{u.first_name} {u.last_name}".strip() or u.username,
+            'email':        u.email,
+            'role':         u.role,
+            'role_display': u.get_role_display(),
+        }
+
+    def get_status_display(self, obj):
+        labels = {
+            'pending': 'Pending', 'awaiting_review': 'Awaiting Review',
+            'approved': 'Approved', 'rejected': 'Rejected', 'overdue': 'Overdue',
+        }
+        return labels.get(obj.status, obj.status)
 
     def get_can_fire(self, obj):
         return obj.status == 'overdue' and not obj.is_fired
 
-    def get_completed_by_name(self, obj):
-        if obj.completed_by:
-            return f"{obj.completed_by.first_name} {obj.completed_by.last_name}".strip()
-        return None
 
-    def get_completed_by_role(self, obj):
-        if obj.completed_by:
-            return obj.completed_by.get_role_display()
-        return None
- 
- 
-class TaskDetailSerializer(serializers.ModelSerializer):
-    """Full task detail with all relations"""
-    assigned_to   = serializers.SerializerMethodField()
-    completed_by  = TaskUserSerializer(read_only=True)
-    approved_by   = TaskUserSerializer(read_only=True)
-    rejected_by   = TaskUserSerializer(read_only=True)
-    created_by    = TaskUserSerializer(read_only=True)
+# ================================================================
+# TASK SERIALIZERS
+# ================================================================
+
+class TaskListSerializer(serializers.ModelSerializer):
+    """Lightweight serializer for task list — task + assignment summary"""
+    assignments   = serializers.SerializerMethodField()
+    status_counts = serializers.SerializerMethodField()
     location_name = serializers.CharField(source='location.name', read_only=True)
-    can_fire       = serializers.SerializerMethodField()
-    status_display = serializers.SerializerMethodField()
+    created_by    = TaskUserSerializer(read_only=True)
 
     class Meta:
         model  = Task
         fields = [
             'id', 'title', 'description',
             'location', 'location_name',
-            'assigned_to', 'created_by',
-            'due_date', 'status', 'status_display',
-            'is_recurring', 'frequency',
-            'requires_photo', 'photo_url',
-            'completed_by', 'completed_at',
-            'approved_by',  'approved_at',
-            'rejected_by',  'rejected_at', 'rejection_reason',
-            'is_fired',
-            'can_fire',
-            'created_at',   'updated_at',
+            'due_date', 'is_recurring', 'frequency', 'requires_photo',
+            'created_by', 'created_at',
+            'assignments', 'status_counts',
         ]
 
-    def get_assigned_to(self, obj):
-        u = obj.assigned_to
-        if not u:
-            return []
-        return [{'id': u.id, 'name': f"{u.first_name} {u.last_name}".strip(),
-                 'email': u.email, 'role': u.role, 'role_display': u.get_role_display()}]
+    def get_assignments(self, obj):
+        return [
+            {
+                'id':       a.id,
+                'employee': {
+                    'id':   a.employee_id,
+                    'name': f"{a.employee.first_name} {a.employee.last_name}".strip() or a.employee.username,
+                    'role': a.employee.get_role_display(),
+                },
+                'status':    a.status,
+                'is_fired':  a.is_fired,
+                'can_fire':  a.status == 'overdue' and not a.is_fired,
+            }
+            for a in obj.assignments.select_related('employee').all()
+        ]
 
-    def get_can_fire(self, obj):
-        return obj.status == 'overdue' and not obj.is_fired
+    def get_status_counts(self, obj):
+        counts = {'pending': 0, 'awaiting_review': 0, 'approved': 0, 'rejected': 0, 'overdue': 0}
+        for a in obj.assignments.all():
+            if a.status in counts:
+                counts[a.status] += 1
+        return counts
 
-    def get_status_display(self, obj):
-        status_labels = {
-            'pending':         'Pending',
-            'completed':       'Completed',
-            'awaiting_review': 'Awaiting Review',
-            'approved':        'Approved',
-            'rejected':        'Rejected',
-            'overdue':         'Overdue',
-        }
-        return status_labels.get(obj.status, obj.status)
- 
- 
-class TaskCreateSerializer(serializers.ModelSerializer):
-    assigned_to = serializers.PrimaryKeyRelatedField(
-        queryset=User.objects.filter(is_active=True),
-    )
+
+class TaskDetailSerializer(serializers.ModelSerializer):
+    """Full task detail with all assignments"""
+    assignments   = TaskAssignmentSerializer(many=True, read_only=True)
+    status_counts = serializers.SerializerMethodField()
+    created_by    = TaskUserSerializer(read_only=True)
+    location_name = serializers.CharField(source='location.name', read_only=True)
 
     class Meta:
         model  = Task
         fields = [
-            'title', 'description',
-            'location', 'assigned_to',
-            'due_date',
-            'is_recurring', 'frequency',
-            'requires_photo',
+            'id', 'title', 'description',
+            'location', 'location_name',
+            'due_date', 'is_recurring', 'frequency', 'requires_photo',
+            'created_by', 'created_at', 'updated_at',
+            'assignments', 'status_counts',
         ]
+
+    def get_status_counts(self, obj):
+        counts = {'pending': 0, 'awaiting_review': 0, 'approved': 0, 'rejected': 0, 'overdue': 0}
+        for a in obj.assignments.all():
+            if a.status in counts:
+                counts[a.status] += 1
+        return counts
+
+
+class TaskCreateSerializer(serializers.Serializer):
+    """Validates task + employee list for create"""
+    title          = serializers.CharField(max_length=255)
+    description    = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    location       = serializers.PrimaryKeyRelatedField(queryset=Location.objects.all())
+    assigned_to    = serializers.ListField(
+        child=serializers.IntegerField(), min_length=1,
+        help_text='List of employee IDs'
+    )
+    due_date       = serializers.DateField()
+    is_recurring   = serializers.BooleanField(default=False)
+    frequency      = serializers.ChoiceField(choices=['none', 'daily', 'weekly', 'monthly'], default='none')
+    requires_photo = serializers.BooleanField(default=False)
 
     def validate_due_date(self, value):
         today = timezone.localdate()
         if value < today:
-            raise serializers.ValidationError(
-                f"Due date cannot be in the past. Today is {today}."
-            )
+            raise serializers.ValidationError(f"Due date cannot be in the past. Today is {today}.")
         return value
 
-    def validate_assigned_to(self, user):
-        if user.role not in ASSIGNABLE_ROLES:
-            raise serializers.ValidationError(
-                f"{user.get_full_name()} is not a Tattoo Artist, Body Piercer, or Staff."
-            )
-        if not user.is_active:
-            raise serializers.ValidationError(f"{user.get_full_name()} is inactive.")
-        return user
-
     def validate(self, data):
-        user     = data.get('assigned_to')
+        emp_ids  = data.get('assigned_to', [])
         location = data.get('location')
+        employees = User.objects.filter(id__in=emp_ids, is_active=True)
+        found_ids = set(employees.values_list('id', flat=True))
 
-        if user and location and user.location != location:
-            raise serializers.ValidationError({
-                "assigned_to": f"{user.get_full_name()} does not belong to the selected location."
-            })
+        errors = []
+        for eid in emp_ids:
+            if eid not in found_ids:
+                errors.append(f"Employee {eid} not found or inactive.")
+        if errors:
+            raise serializers.ValidationError({'assigned_to': errors})
+
+        for emp in employees:
+            if emp.role not in ASSIGNABLE_ROLES:
+                errors.append(f"{emp.get_full_name()} is not a Tattoo Artist, Body Piercer, or Staff.")
+            elif location and emp.location != location:
+                errors.append(f"{emp.get_full_name()} does not belong to the selected location.")
+        if errors:
+            raise serializers.ValidationError({'assigned_to': errors})
 
         is_recurring = data.get('is_recurring', False)
         frequency    = data.get('frequency', 'none')
-
         if is_recurring and frequency == 'none':
-            raise serializers.ValidationError({
-                "frequency": "Please select a frequency for the recurring task."
-            })
+            raise serializers.ValidationError({'frequency': 'Please select a frequency for the recurring task.'})
         if not is_recurring:
             data['frequency'] = 'none'
 
+        data['_employees'] = list(employees)
         return data
- 
- 
-class TaskUpdateSerializer(serializers.ModelSerializer):
-    assigned_to = serializers.PrimaryKeyRelatedField(
-        queryset=User.objects.filter(is_active=True),
-        required=False,
-    )
 
-    class Meta:
-        model  = Task
-        fields = [
-            'title', 'description',
-            'location', 'assigned_to',
-            'due_date',
-            'is_recurring', 'frequency',
-            'requires_photo',
-        ]
+    def create(self, validated_data):
+        employees    = validated_data.pop('_employees')
+        emp_ids_raw  = validated_data.pop('assigned_to')
+        task = Task.objects.create(**validated_data)
+        for emp in employees:
+            TaskAssignment.objects.create(task=task, employee=emp)
+        return task
+
+
+class TaskUpdateSerializer(serializers.Serializer):
+    """Updates task fields; optionally adds new employees"""
+    title          = serializers.CharField(max_length=255, required=False)
+    description    = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    due_date       = serializers.DateField(required=False)
+    is_recurring   = serializers.BooleanField(required=False)
+    frequency      = serializers.ChoiceField(choices=['none', 'daily', 'weekly', 'monthly'], required=False)
+    requires_photo = serializers.BooleanField(required=False)
+    assigned_to    = serializers.ListField(
+        child=serializers.IntegerField(), required=False,
+        help_text='Add these employee IDs as new assignments'
+    )
 
     def validate_due_date(self, value):
         today = timezone.localdate()
         if value < today:
-            raise serializers.ValidationError(
-                f"Due date cannot be in the past. Today is {today}."
-            )
+            raise serializers.ValidationError(f"Due date cannot be in the past. Today is {today}.")
         return value
 
-    def validate_assigned_to(self, user):
-        if user.role not in ASSIGNABLE_ROLES:
-            raise serializers.ValidationError(
-                f"{user.get_full_name()} is not a Tattoo Artist, Body Piercer, or Staff."
-            )
-        if not user.is_active:
-            raise serializers.ValidationError(f"{user.get_full_name()} is inactive.")
-        return user
-
     def validate(self, data):
-        user     = data.get('assigned_to', self.instance.assigned_to)
-        location = data.get('location',    self.instance.location)
+        emp_ids = data.get('assigned_to', [])
+        if emp_ids:
+            task     = self.context.get('task')
+            location = task.location if task else None
+            employees = User.objects.filter(id__in=emp_ids, is_active=True)
+            found_ids = set(employees.values_list('id', flat=True))
+            errors = []
+            for eid in emp_ids:
+                if eid not in found_ids:
+                    errors.append(f"Employee {eid} not found or inactive.")
+            for emp in employees:
+                if emp.role not in ASSIGNABLE_ROLES:
+                    errors.append(f"{emp.get_full_name()} is not a Tattoo Artist, Body Piercer, or Staff.")
+                elif location and emp.location != location:
+                    errors.append(f"{emp.get_full_name()} does not belong to this task's location.")
+            if errors:
+                raise serializers.ValidationError({'assigned_to': errors})
+            data['_employees'] = list(employees)
 
-        if user and location and user.location != location:
-            raise serializers.ValidationError({
-                "assigned_to": f"{user.get_full_name()} does not belong to the selected location."
-            })
-
-        is_recurring = data.get('is_recurring', self.instance.is_recurring)
-        frequency    = data.get('frequency',    self.instance.frequency)
-
-        if is_recurring and frequency == 'none':
-            raise serializers.ValidationError({
-                "frequency": "Please select a frequency for the recurring task."
-            })
-        if not is_recurring:
+        is_recurring = data.get('is_recurring')
+        frequency    = data.get('frequency')
+        if is_recurring is not None and not is_recurring:
             data['frequency'] = 'none'
-
         return data
 
-    def update(self, instance, validated_data):
-        for attr, value in validated_data.items():
-            setattr(instance, attr, value)
-        instance.save()
-        return instance
+
+class TaskRejectSerializer(serializers.Serializer):
+    assignment_id    = serializers.IntegerField(required=True)
+    rejection_reason = serializers.CharField(required=True, min_length=5)
+
 
 class TaskApproveSerializer(serializers.Serializer):
-    pass
- 
- 
-class TaskRejectSerializer(serializers.Serializer):
-    rejection_reason = serializers.CharField(required=True, min_length=5)
- 
- 
+    assignment_id = serializers.IntegerField(required=True)
+
+
 class TaskStatsSerializer(serializers.Serializer):
-    """Updated stats — all_tasks, overdue, completed, rejected"""
     all_tasks = serializers.IntegerField()
     overdue   = serializers.IntegerField()
     completed = serializers.IntegerField()
     rejected  = serializers.IntegerField()
- 
- 
+
+
 class LocationEmployeeSerializer(serializers.ModelSerializer):
     role_display = serializers.CharField(source='get_role_display', read_only=True)
- 
+
     class Meta:
         model  = User
-        fields = ['id', 'first_name', 'last_name', 'username',  'email','role', 'role_display']
- 
- 
-# ── Fire User Serializer ──────────────────────────────────────────
+        fields = ['id', 'first_name', 'last_name', 'username', 'email', 'role', 'role_display']
+
+
 class FireUserSerializer(serializers.Serializer):
-    fire_reason = serializers.CharField(required=True, min_length=5)
+    assignment_id = serializers.IntegerField(required=True)
+    fire_reason   = serializers.CharField(required=True, min_length=5)
 
 
 # ================================================================
@@ -825,71 +827,88 @@ class BranchManagerDashboardSerializer(serializers.Serializer):
  
     
 
-class BranchManagerTaskCreateSerializer(serializers.ModelSerializer):
-    assigned_to = serializers.PrimaryKeyRelatedField(
-        queryset=User.objects.filter(is_active=True),
-    )
+class BranchManagerTaskCreateSerializer(serializers.Serializer):
+    """Branch manager creates task for employees at their location"""
+    title          = serializers.CharField(max_length=255)
+    description    = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    assigned_to    = serializers.ListField(child=serializers.IntegerField(), min_length=1)
+    due_date       = serializers.DateField()
+    is_recurring   = serializers.BooleanField(default=False)
+    frequency      = serializers.ChoiceField(choices=['none', 'daily', 'weekly', 'monthly'], default='none')
+    requires_photo = serializers.BooleanField(default=False)
 
-    class Meta:
-        model  = Task
-        fields = [
-            'title', 'description',
-            'assigned_to', 'due_date',
-            'is_recurring', 'frequency',
-            'requires_photo',
-        ]
-
-    def validate_assigned_to(self, user):
-        if user.role not in ASSIGNABLE_ROLES:
-            raise serializers.ValidationError(
-                f"{user.get_full_name()} is not a Tattoo Artist, Body Piercer, or Staff."
-            )
-        if not user.is_active:
-            raise serializers.ValidationError(f"{user.get_full_name()} is inactive.")
-        return user
+    def validate_due_date(self, value):
+        today = timezone.localdate()
+        if value < today:
+            raise serializers.ValidationError(f"Due date cannot be in the past. Today is {today}.")
+        return value
 
     def validate(self, data):
+        location = self.context.get('location')
+        emp_ids  = data.get('assigned_to', [])
+        employees = User.objects.filter(id__in=emp_ids, is_active=True)
+        found_ids = set(employees.values_list('id', flat=True))
+        errors = []
+        for eid in emp_ids:
+            if eid not in found_ids:
+                errors.append(f"Employee {eid} not found or inactive.")
+        for emp in employees:
+            if emp.role not in ASSIGNABLE_ROLES:
+                errors.append(f"{emp.get_full_name()} is not a Tattoo Artist, Body Piercer, or Staff.")
+            elif location and emp.location != location:
+                errors.append(f"{emp.get_full_name()} does not belong to your location.")
+        if errors:
+            raise serializers.ValidationError({'assigned_to': errors})
         is_recurring = data.get('is_recurring', False)
         frequency    = data.get('frequency', 'none')
-
         if is_recurring and frequency == 'none':
-            raise serializers.ValidationError({
-                "frequency": "Please select a frequency for the recurring task."
-            })
+            raise serializers.ValidationError({'frequency': 'Please select a frequency for the recurring task.'})
         if not is_recurring:
             data['frequency'] = 'none'
-
+        data['_employees'] = list(employees)
         return data
 
+
 class BranchManagerTaskListSerializer(serializers.ModelSerializer):
-    assigned_to  = serializers.SerializerMethodField()
-    submitted_at = serializers.DateTimeField(
-        source='created_at', format='%m/%d/%Y', read_only=True
-    )
+    assignments  = serializers.SerializerMethodField()
+    status_counts = serializers.SerializerMethodField()
+    submitted_at = serializers.DateTimeField(source='created_at', format='%m/%d/%Y', read_only=True)
     can_edit     = serializers.SerializerMethodField()
 
     class Meta:
         model  = Task
         fields = [
             'id', 'title', 'description',
-            'assigned_to',
-            'due_date', 'status', 'submitted_at',
+            'assignments', 'status_counts',
+            'due_date', 'submitted_at',
             'is_recurring', 'frequency',
             'requires_photo',
             'can_edit',
         ]
 
-    def get_assigned_to(self, obj):
-        u = obj.assigned_to
-        if not u:
-            return None
-        return {'id': u.id, 'name': f"{u.first_name} {u.last_name}".strip(),
-                'email': u.email, 'role': u.role, 'role_display': u.get_role_display()}
+    def get_assignments(self, obj):
+        return [
+            {
+                'id':      a.id,
+                'employee': {'id': a.employee_id, 'name': f"{a.employee.first_name} {a.employee.last_name}".strip(), 'role': a.employee.get_role_display()},
+                'status':   a.status,
+                'is_fired': a.is_fired,
+            }
+            for a in obj.assignments.select_related('employee').all()
+        ]
+
+    def get_status_counts(self, obj):
+        counts = {'pending': 0, 'awaiting_review': 0, 'approved': 0, 'rejected': 0, 'overdue': 0}
+        for a in obj.assignments.all():
+            if a.status in counts:
+                counts[a.status] += 1
+        return counts
 
     def get_can_edit(self, obj):
         request = self.context.get('request')
         if request and request.user:
-            return obj.status == 'pending' and obj.created_by_id == request.user.id
+            has_pending = obj.assignments.filter(status='pending').exists()
+            return has_pending and obj.created_by_id == request.user.id
         return False
 
 EMPLOYEE_NOTIFICATION_ROLES = ['tattoo_artist', 'body_piercer', 'staff']

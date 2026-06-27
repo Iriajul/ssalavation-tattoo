@@ -1,5 +1,5 @@
 # apps/users/serializers.py
-from apps.admin_api.models import Task, Instruction
+from apps.admin_api.models import TaskAssignment, Instruction
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
 
@@ -141,54 +141,68 @@ class AppInstructionDetailSerializer(serializers.ModelSerializer):
 
 
 class AppTaskListSerializer(serializers.ModelSerializer):
+    """Serializes a TaskAssignment for the employee's task list"""
+    task_id          = serializers.IntegerField(source='task.id', read_only=True)
+    title            = serializers.CharField(source='task.title', read_only=True)
+    due_date         = serializers.DateField(source='task.due_date', read_only=True)
+    due_date_display = serializers.SerializerMethodField()
+    requires_photo   = serializers.BooleanField(source='task.requires_photo', read_only=True)
+    is_recurring     = serializers.BooleanField(source='task.is_recurring', read_only=True)
+    frequency        = serializers.CharField(source='task.frequency', read_only=True)
     assigned_by_name = serializers.SerializerMethodField()
     assigned_by_role = serializers.SerializerMethodField()
-    due_date_display = serializers.SerializerMethodField()
 
     class Meta:
-        model  = Task
+        model  = TaskAssignment
         fields = [
-            'id', 'title', 'status',
+            'id', 'task_id', 'title', 'status',
             'assigned_by_name', 'assigned_by_role',
             'due_date', 'due_date_display',
             'requires_photo', 'is_recurring', 'frequency',
         ]
 
     def get_assigned_by_name(self, obj):
-        if obj.created_by:
-            return f"{obj.created_by.first_name} {obj.created_by.last_name}".strip()
+        cb = obj.task.created_by
+        if cb:
+            return f"{cb.first_name} {cb.last_name}".strip()
         return None
 
     def get_assigned_by_role(self, obj):
-        if not obj.created_by:
+        cb = obj.task.created_by
+        if not cb:
             return 'ADMIN'
-        role_map = {
-            'super_admin':      'ADMIN',
-            'branch_manager':   'MGR',
-            'district_manager': 'DM',
-        }
-        return role_map.get(obj.created_by.role, 'ADMIN')
+        return {'super_admin': 'ADMIN', 'branch_manager': 'MGR', 'district_manager': 'DM'}.get(cb.role, 'ADMIN')
 
     def get_due_date_display(self, obj):
         from django.utils import timezone
+        import datetime
         today    = timezone.localdate()
-        tomorrow = today + __import__('datetime').timedelta(days=1)
-        if obj.due_date == today:
-            return f"Today, {obj.due_date.strftime('%b %d, %Y')}"
-        elif obj.due_date == tomorrow:
-            return f"Tomorrow, {obj.due_date.strftime('%b %d, %Y')}"
-        return obj.due_date.strftime('%b %d, %Y')
+        tomorrow = today + datetime.timedelta(days=1)
+        d = obj.task.due_date
+        if d == today:
+            return f"Today, {d.strftime('%b %d, %Y')}"
+        elif d == tomorrow:
+            return f"Tomorrow, {d.strftime('%b %d, %Y')}"
+        return d.strftime('%b %d, %Y')
 
 
 class AppTaskDetailSerializer(serializers.ModelSerializer):
+    """Serializes a TaskAssignment with full task detail"""
+    task_id          = serializers.IntegerField(source='task.id', read_only=True)
+    title            = serializers.CharField(source='task.title', read_only=True)
+    description      = serializers.CharField(source='task.description', read_only=True)
+    due_date         = serializers.DateField(source='task.due_date', read_only=True)
+    due_date_display = serializers.SerializerMethodField()
+    requires_photo   = serializers.BooleanField(source='task.requires_photo', read_only=True)
+    is_recurring     = serializers.BooleanField(source='task.is_recurring', read_only=True)
+    frequency        = serializers.CharField(source='task.frequency', read_only=True)
     assigned_by_name = serializers.SerializerMethodField()
     assigned_by_role = serializers.SerializerMethodField()
-    due_date_display = serializers.SerializerMethodField()
 
     class Meta:
-        model  = Task
+        model  = TaskAssignment
         fields = [
-            'id', 'title', 'description', 'status',
+            'id', 'task_id', 'title', 'description', 'status',
             'assigned_by_name', 'assigned_by_role',
             'due_date', 'due_date_display',
             'requires_photo', 'photo_url',
@@ -197,9 +211,10 @@ class AppTaskDetailSerializer(serializers.ModelSerializer):
         ]
 
     def get_assigned_by_name(self, obj):
-        if obj.created_by:
-            role = obj.created_by.role
-            name = f"{obj.created_by.first_name} {obj.created_by.last_name}".strip()
+        cb = obj.task.created_by
+        if cb:
+            role = cb.role
+            name = f"{cb.first_name} {cb.last_name}".strip()
             if role == 'branch_manager':
                 return f"Manager — {name}"
             elif role == 'district_manager':
@@ -208,25 +223,22 @@ class AppTaskDetailSerializer(serializers.ModelSerializer):
         return "Admin"
 
     def get_assigned_by_role(self, obj):
-        if not obj.created_by:
+        cb = obj.task.created_by
+        if not cb:
             return 'ADMIN'
-        role_map = {
-            'super_admin':      'ADMIN',
-            'branch_manager':   'MGR',
-            'district_manager': 'DM',
-        }
-        return role_map.get(obj.created_by.role, 'ADMIN')
+        return {'super_admin': 'ADMIN', 'branch_manager': 'MGR', 'district_manager': 'DM'}.get(cb.role, 'ADMIN')
 
     def get_due_date_display(self, obj):
         from django.utils import timezone
         import datetime
         today    = timezone.localdate()
         tomorrow = today + datetime.timedelta(days=1)
-        if obj.due_date == today:
-            return f"Today, {obj.due_date.strftime('%b %d, %Y')}"
-        elif obj.due_date == tomorrow:
-            return f"Tomorrow, {obj.due_date.strftime('%b %d, %Y')}"
-        return obj.due_date.strftime('%b %d, %Y')
+        d = obj.task.due_date
+        if d == today:
+            return f"Today, {d.strftime('%b %d, %Y')}"
+        elif d == tomorrow:
+            return f"Tomorrow, {d.strftime('%b %d, %Y')}"
+        return d.strftime('%b %d, %Y')
 
 
 # ================================================================
@@ -234,34 +246,34 @@ class AppTaskDetailSerializer(serializers.ModelSerializer):
 # ================================================================
 
 class AppTaskHistoryListSerializer(serializers.ModelSerializer):
-    """Lightweight serializer for task history list"""
-    assigned_by_name = serializers.SerializerMethodField()
-    assigned_by_role = serializers.SerializerMethodField()
+    """Lightweight serializer for task history list (TaskAssignment)"""
+    task_id              = serializers.IntegerField(source='task.id', read_only=True)
+    title                = serializers.CharField(source='task.title', read_only=True)
+    requires_photo       = serializers.BooleanField(source='task.requires_photo', read_only=True)
+    assigned_by_name     = serializers.SerializerMethodField()
+    assigned_by_role     = serializers.SerializerMethodField()
     created_date_display = serializers.SerializerMethodField()
 
     class Meta:
-        model  = Task
+        model  = TaskAssignment
         fields = [
-            'id', 'title', 'status',
+            'id', 'task_id', 'title', 'status',
             'assigned_by_name', 'assigned_by_role',
             'created_at', 'created_date_display',
             'completed_at', 'requires_photo',
         ]
 
     def get_assigned_by_name(self, obj):
-        if obj.created_by:
-            return f"{obj.created_by.first_name} {obj.created_by.last_name}".strip()
+        cb = obj.task.created_by
+        if cb:
+            return f"{cb.first_name} {cb.last_name}".strip()
         return "Admin"
 
     def get_assigned_by_role(self, obj):
-        if not obj.created_by:
+        cb = obj.task.created_by
+        if not cb:
             return 'ADMIN'
-        role_map = {
-            'super_admin':      'ADMIN',
-            'branch_manager':   'MGR',
-            'district_manager': 'DM',
-        }
-        return role_map.get(obj.created_by.role, 'ADMIN')
+        return {'super_admin': 'ADMIN', 'branch_manager': 'MGR', 'district_manager': 'DM'}.get(cb.role, 'ADMIN')
 
     def get_created_date_display(self, obj):
         if obj.completed_at:
@@ -270,15 +282,20 @@ class AppTaskHistoryListSerializer(serializers.ModelSerializer):
 
 
 class AppTaskHistoryDetailSerializer(serializers.ModelSerializer):
-    """Detailed serializer for task history detail"""
-    assigned_by_name = serializers.SerializerMethodField()
-    assigned_by_role = serializers.SerializerMethodField()
+    """Detailed serializer for task history detail (TaskAssignment)"""
+    task_id              = serializers.IntegerField(source='task.id', read_only=True)
+    title                = serializers.CharField(source='task.title', read_only=True)
+    description          = serializers.CharField(source='task.description', read_only=True)
+    requires_photo       = serializers.BooleanField(source='task.requires_photo', read_only=True)
+    is_recurring         = serializers.BooleanField(source='task.is_recurring', read_only=True)
+    assigned_by_name     = serializers.SerializerMethodField()
+    assigned_by_role     = serializers.SerializerMethodField()
     created_date_display = serializers.SerializerMethodField()
 
     class Meta:
-        model  = Task
+        model  = TaskAssignment
         fields = [
-            'id', 'title', 'description', 'status',
+            'id', 'task_id', 'title', 'description', 'status',
             'assigned_by_name', 'assigned_by_role',
             'created_at', 'created_date_display',
             'completed_at', 'photo_url', 'rejection_reason',
@@ -286,9 +303,10 @@ class AppTaskHistoryDetailSerializer(serializers.ModelSerializer):
         ]
 
     def get_assigned_by_name(self, obj):
-        if obj.created_by:
-            role = obj.created_by.role
-            name = f"{obj.created_by.first_name} {obj.created_by.last_name}".strip()
+        cb = obj.task.created_by
+        if cb:
+            role = cb.role
+            name = f"{cb.first_name} {cb.last_name}".strip()
             if role == 'branch_manager':
                 return f"Manager — {name}"
             elif role == 'district_manager':
@@ -297,14 +315,10 @@ class AppTaskHistoryDetailSerializer(serializers.ModelSerializer):
         return "Admin"
 
     def get_assigned_by_role(self, obj):
-        if not obj.created_by:
+        cb = obj.task.created_by
+        if not cb:
             return 'ADMIN'
-        role_map = {
-            'super_admin':      'ADMIN',
-            'branch_manager':   'MGR',
-            'district_manager': 'DM',
-        }
-        return role_map.get(obj.created_by.role, 'ADMIN')
+        return {'super_admin': 'ADMIN', 'branch_manager': 'MGR', 'district_manager': 'DM'}.get(cb.role, 'ADMIN')
 
     def get_created_date_display(self, obj):
         if obj.completed_at:

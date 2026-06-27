@@ -360,7 +360,7 @@ class TaskAssignmentSerializer(serializers.ModelSerializer):
     class Meta:
         model  = TaskAssignment
         fields = [
-            'id', 'assignment_id', 'task_id',
+            'assignment_id', 'task_id',
             'employee', 'status', 'status_display',
             'is_fired', 'can_fire', 'photo_url',
             'completed_at', 'approved_by', 'approved_at',
@@ -371,7 +371,6 @@ class TaskAssignmentSerializer(serializers.ModelSerializer):
     def get_employee(self, obj):
         u = obj.employee
         return {
-            'id':           u.id,
             'employee_id':  u.id,
             'name':         f"{u.first_name} {u.last_name}".strip() or u.username,
             'email':        u.email,
@@ -405,7 +404,7 @@ class TaskListSerializer(serializers.ModelSerializer):
     class Meta:
         model  = Task
         fields = [
-            'id', 'task_id', 'title', 'description',
+            'task_id', 'title', 'description',
             'location', 'location_name',
             'due_date', 'is_recurring', 'frequency', 'requires_photo',
             'created_by', 'created_at',
@@ -415,11 +414,9 @@ class TaskListSerializer(serializers.ModelSerializer):
     def get_assignments(self, obj):
         return [
             {
-                'id':            a.id,
                 'assignment_id': a.id,
                 'task_id':       a.task_id,
                 'employee': {
-                    'id':          a.employee_id,
                     'employee_id': a.employee_id,
                     'name': f"{a.employee.first_name} {a.employee.last_name}".strip() or a.employee.username,
                     'role': a.employee.get_role_display(),
@@ -450,7 +447,7 @@ class TaskDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model  = Task
         fields = [
-            'id', 'task_id', 'title', 'description',
+            'task_id', 'title', 'description',
             'location', 'location_name',
             'due_date', 'is_recurring', 'frequency', 'requires_photo',
             'created_by', 'created_at', 'updated_at',
@@ -888,7 +885,7 @@ class BranchManagerTaskListSerializer(serializers.ModelSerializer):
     class Meta:
         model  = Task
         fields = [
-            'id', 'task_id', 'title', 'description',
+            'task_id', 'title', 'description',
             'assignments', 'status_counts',
             'due_date', 'submitted_at',
             'is_recurring', 'frequency',
@@ -899,10 +896,9 @@ class BranchManagerTaskListSerializer(serializers.ModelSerializer):
     def get_assignments(self, obj):
         return [
             {
-                'id':            a.id,
                 'assignment_id': a.id,
                 'task_id':       a.task_id,
-                'employee': {'id': a.employee_id, 'employee_id': a.employee_id, 'name': f"{a.employee.first_name} {a.employee.last_name}".strip(), 'role': a.employee.get_role_display()},
+                'employee': {'employee_id': a.employee_id, 'name': f"{a.employee.first_name} {a.employee.last_name}".strip(), 'role': a.employee.get_role_display()},
                 'status':   a.status,
                 'is_fired': a.is_fired,
             }

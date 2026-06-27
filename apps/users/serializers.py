@@ -156,7 +156,7 @@ class AppTaskListSerializer(serializers.ModelSerializer):
     class Meta:
         model  = TaskAssignment
         fields = [
-            'id', 'assignment_id', 'task_id', 'title', 'status',
+            'assignment_id', 'task_id', 'title', 'status',
             'assigned_by_name', 'assigned_by_role',
             'due_date', 'due_date_display',
             'requires_photo', 'is_recurring', 'frequency',
@@ -204,7 +204,7 @@ class AppTaskDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model  = TaskAssignment
         fields = [
-            'id', 'assignment_id', 'task_id', 'title', 'description', 'status',
+            'assignment_id', 'task_id', 'title', 'description', 'status',
             'assigned_by_name', 'assigned_by_role',
             'due_date', 'due_date_display',
             'requires_photo', 'photo_url',
@@ -260,7 +260,7 @@ class AppTaskHistoryListSerializer(serializers.ModelSerializer):
     class Meta:
         model  = TaskAssignment
         fields = [
-            'id', 'assignment_id', 'task_id', 'title', 'status',
+            'assignment_id', 'task_id', 'title', 'status',
             'assigned_by_name', 'assigned_by_role',
             'created_at', 'created_date_display',
             'completed_at', 'requires_photo',
@@ -299,7 +299,7 @@ class AppTaskHistoryDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model  = TaskAssignment
         fields = [
-            'id', 'assignment_id', 'task_id', 'title', 'description', 'status',
+            'assignment_id', 'task_id', 'title', 'description', 'status',
             'assigned_by_name', 'assigned_by_role',
             'created_at', 'created_date_display',
             'completed_at', 'photo_url', 'rejection_reason',

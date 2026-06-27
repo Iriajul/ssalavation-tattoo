@@ -7,7 +7,7 @@ from django.contrib.auth import get_user_model
 from django.db.models import Count, Case, When, IntegerField, Q
 from django.utils import timezone
 from datetime import datetime, time, timedelta, date
-from .models import Location, Task, Attendance, UserWorkSchedule
+from .models import Location, Task, Attendance, UserWorkSchedule, ActivityLog
 from apps.users.models import AppNotification
 from .permissions import IsDistrictManager
 from .utils import check_file_size
@@ -454,15 +454,53 @@ class DistrictManagerTaskDetailView(APIView):
         if task.status != 'pending':
             return Response({'error': 'Only pending tasks can be edited.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        data = request.data.copy()
-        if isinstance(data.get('assigned_to'), list):
-            data['assigned_to'] = data['assigned_to'][0]
+        data    = request.data.copy()
+        raw     = data.get('assigned_to')
+        emp_ids = raw if isinstance(raw, list) else [raw]
+
+        # Update existing task with first user
+        data['assigned_to'] = emp_ids[0]
         serializer = TaskUpdateSerializer(task, data=data, partial=True)
         serializer.is_valid(raise_exception=True)
         task = serializer.save()
+        all_tasks = [task]
+
+        # Create new tasks for additional users
+        for emp_id in emp_ids[1:]:
+            new_data = {
+                'title':          task.title,
+                'description':    task.description,
+                'location':       task.location_id,
+                'due_date':       str(task.due_date),
+                'is_recurring':   task.is_recurring,
+                'frequency':      task.frequency,
+                'requires_photo': task.requires_photo,
+                'assigned_to':    emp_id,
+            }
+            create_serializer = TaskCreateSerializer(data=new_data)
+            create_serializer.is_valid(raise_exception=True)
+            new_task = create_serializer.save(created_by=request.user)
+            ActivityLog.objects.create(
+                action='task_assigned', actor=request.user, task=new_task,
+                target_user=new_task.assigned_to,
+                message=f'Task "{new_task.title}" assigned to {new_task.assigned_to.get_full_name()}'
+            )
+            AppNotification.objects.create(
+                recipient=new_task.assigned_to, notif_type='task_assigned',
+                title='New Task Assigned',
+                message=f"{request.user.get_full_name() or 'Manager'} assigned you '{new_task.title}'",
+                task=new_task,
+            )
+            all_tasks.append(new_task)
+
+        if len(all_tasks) == 1:
+            return Response({
+                'message': 'Task updated successfully.',
+                'task':    TaskDetailSerializer(task).data,
+            }, status=status.HTTP_200_OK)
         return Response({
-            'message': 'Task updated successfully.',
-            'task':    TaskDetailSerializer(task).data,
+            'message': f'Task updated and {len(all_tasks) - 1} new task(s) created for additional users.',
+            'tasks':   TaskDetailSerializer(all_tasks, many=True).data,
         }, status=status.HTTP_200_OK)
 
     def delete(self, request, pk):

@@ -546,6 +546,10 @@ class TaskUpdateSerializer(serializers.Serializer):
         if emp_ids:
             task     = self.context.get('task')
             location = task.location if task else None
+            # District managers oversee multiple locations: when the view supplies
+            # `allowed_location_ids`, employees may come from any of those locations
+            # instead of being restricted to the task's own location.
+            allowed_location_ids = self.context.get('allowed_location_ids')
             employees = User.objects.filter(id__in=emp_ids, is_active=True)
             found_ids = set(employees.values_list('id', flat=True))
             errors = []
@@ -555,6 +559,9 @@ class TaskUpdateSerializer(serializers.Serializer):
             for emp in employees:
                 if emp.role not in ASSIGNABLE_ROLES:
                     errors.append(f"{emp.get_full_name()} is not a Tattoo Artist, Body Piercer, or Staff.")
+                elif allowed_location_ids is not None:
+                    if emp.location_id not in allowed_location_ids:
+                        errors.append(f"{emp.get_full_name()} does not belong to any of your locations.")
                 elif location and emp.location != location:
                     errors.append(f"{emp.get_full_name()} does not belong to this task's location.")
             if errors:

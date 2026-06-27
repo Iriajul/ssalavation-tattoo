@@ -436,7 +436,8 @@ class DistrictManagerTaskDetailView(APIView):
         return Response(TaskDetailSerializer(task).data, status=status.HTTP_200_OK)
 
     def patch(self, request, pk):
-        task = self._get_task(pk, self._get_loc_ids())
+        loc_ids = self._get_loc_ids()
+        task    = self._get_task(pk, loc_ids)
         if not task:
             return Response({'error': 'Task not found.'}, status=status.HTTP_404_NOT_FOUND)
 
@@ -445,7 +446,7 @@ class DistrictManagerTaskDetailView(APIView):
         if raw is not None:
             data['assigned_to'] = raw if isinstance(raw, list) else [raw]
 
-        serializer = TaskUpdateSerializer(data=data, context={'task': task})
+        serializer = TaskUpdateSerializer(data=data, context={'task': task, 'allowed_location_ids': loc_ids})
         serializer.is_valid(raise_exception=True)
         vd = serializer.validated_data
 

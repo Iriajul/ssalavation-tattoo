@@ -492,11 +492,12 @@ class AppTaskViewSet(viewsets.ReadOnlyModelViewSet):
         )
 
         return Response({
-            "message":   "Task submitted for review.",
-            "task_id":   task.id,
-            "title":     task.title,
-            "status":    assignment.status,
-            "photo_url": assignment.photo_url,
+            "message":       "Task submitted for review.",
+            "assignment_id": assignment.id,
+            "task_id":       task.id,
+            "title":         task.title,
+            "status":        assignment.status,
+            "photo_url":     assignment.photo_url,
         }, status=status.HTTP_200_OK)
 
 

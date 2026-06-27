@@ -142,6 +142,7 @@ class AppInstructionDetailSerializer(serializers.ModelSerializer):
 
 class AppTaskListSerializer(serializers.ModelSerializer):
     """Serializes a TaskAssignment for the employee's task list"""
+    assignment_id    = serializers.IntegerField(source='id', read_only=True)
     task_id          = serializers.IntegerField(source='task.id', read_only=True)
     title            = serializers.CharField(source='task.title', read_only=True)
     due_date         = serializers.DateField(source='task.due_date', read_only=True)
@@ -155,7 +156,7 @@ class AppTaskListSerializer(serializers.ModelSerializer):
     class Meta:
         model  = TaskAssignment
         fields = [
-            'id', 'task_id', 'title', 'status',
+            'id', 'assignment_id', 'task_id', 'title', 'status',
             'assigned_by_name', 'assigned_by_role',
             'due_date', 'due_date_display',
             'requires_photo', 'is_recurring', 'frequency',
@@ -188,6 +189,7 @@ class AppTaskListSerializer(serializers.ModelSerializer):
 
 class AppTaskDetailSerializer(serializers.ModelSerializer):
     """Serializes a TaskAssignment with full task detail"""
+    assignment_id    = serializers.IntegerField(source='id', read_only=True)
     task_id          = serializers.IntegerField(source='task.id', read_only=True)
     title            = serializers.CharField(source='task.title', read_only=True)
     description      = serializers.CharField(source='task.description', read_only=True)
@@ -202,7 +204,7 @@ class AppTaskDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model  = TaskAssignment
         fields = [
-            'id', 'task_id', 'title', 'description', 'status',
+            'id', 'assignment_id', 'task_id', 'title', 'description', 'status',
             'assigned_by_name', 'assigned_by_role',
             'due_date', 'due_date_display',
             'requires_photo', 'photo_url',
@@ -247,6 +249,7 @@ class AppTaskDetailSerializer(serializers.ModelSerializer):
 
 class AppTaskHistoryListSerializer(serializers.ModelSerializer):
     """Lightweight serializer for task history list (TaskAssignment)"""
+    assignment_id        = serializers.IntegerField(source='id', read_only=True)
     task_id              = serializers.IntegerField(source='task.id', read_only=True)
     title                = serializers.CharField(source='task.title', read_only=True)
     requires_photo       = serializers.BooleanField(source='task.requires_photo', read_only=True)
@@ -257,7 +260,7 @@ class AppTaskHistoryListSerializer(serializers.ModelSerializer):
     class Meta:
         model  = TaskAssignment
         fields = [
-            'id', 'task_id', 'title', 'status',
+            'id', 'assignment_id', 'task_id', 'title', 'status',
             'assigned_by_name', 'assigned_by_role',
             'created_at', 'created_date_display',
             'completed_at', 'requires_photo',
@@ -283,6 +286,7 @@ class AppTaskHistoryListSerializer(serializers.ModelSerializer):
 
 class AppTaskHistoryDetailSerializer(serializers.ModelSerializer):
     """Detailed serializer for task history detail (TaskAssignment)"""
+    assignment_id        = serializers.IntegerField(source='id', read_only=True)
     task_id              = serializers.IntegerField(source='task.id', read_only=True)
     title                = serializers.CharField(source='task.title', read_only=True)
     description          = serializers.CharField(source='task.description', read_only=True)
@@ -295,7 +299,7 @@ class AppTaskHistoryDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model  = TaskAssignment
         fields = [
-            'id', 'task_id', 'title', 'description', 'status',
+            'id', 'assignment_id', 'task_id', 'title', 'description', 'status',
             'assigned_by_name', 'assigned_by_role',
             'created_at', 'created_date_display',
             'completed_at', 'photo_url', 'rejection_reason',

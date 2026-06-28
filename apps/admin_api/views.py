@@ -2810,11 +2810,13 @@ class AdminNotificationViewSet(viewsets.ViewSet):
             AdminNotification.objects
             .filter(recipients=request.user)
             .select_related('sender')
-            .order_by('-created_at')[:20]
+            .order_by('-created_at')
         )
-        return Response({
-            'received': AdminNotificationSerializer(received, many=True, context={'request': request}).data,
-        }, status=status.HTTP_200_OK)
+        paginator           = PageNumberPagination()
+        paginator.page_size = 15
+        page                = paginator.paginate_queryset(received, request)
+        serializer          = AdminNotificationSerializer(page, many=True, context={'request': request})
+        return paginator.get_paginated_response(serializer.data)
 
     def create(self, request):
         import json
@@ -2870,12 +2872,13 @@ class AdminNotificationViewSet(viewsets.ViewSet):
             AdminNotification.objects
             .filter(sender=request.user)
             .prefetch_related('recipients')
-            .order_by('-created_at')[:20]
+            .order_by('-created_at')
         )
-        return Response(
-            AdminNotificationSentSerializer(sent, many=True, context={'request': request}).data,
-            status=status.HTTP_200_OK,
-        )
+        paginator           = PageNumberPagination()
+        paginator.page_size = 15
+        page                = paginator.paginate_queryset(sent, request)
+        serializer          = AdminNotificationSentSerializer(page, many=True, context={'request': request})
+        return paginator.get_paginated_response(serializer.data)
 
     @action(detail=False, methods=['get'])
     def recipients(self, request):

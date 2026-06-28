@@ -592,11 +592,15 @@ class TaskStatsSerializer(serializers.Serializer):
 
 
 class LocationEmployeeSerializer(serializers.ModelSerializer):
+    name         = serializers.SerializerMethodField()
     role_display = serializers.CharField(source='get_role_display', read_only=True)
 
     class Meta:
         model  = User
-        fields = ['id', 'first_name', 'last_name', 'username', 'email', 'role', 'role_display']
+        fields = ['id', 'name', 'email', 'role', 'role_display']
+
+    def get_name(self, obj):
+        return f"{obj.first_name} {obj.last_name}".strip() or obj.username
 
 
 class FireUserSerializer(serializers.Serializer):

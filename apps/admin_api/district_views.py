@@ -339,27 +339,42 @@ class DistrictManagerTaskView(APIView):
 
     def get(self, request):
         location_filter = request.query_params.get('location')
+        status_filter   = request.query_params.get('status')
+        period_filter   = request.query_params.get('period')
         search          = request.query_params.get('search', '').strip()
 
         locations = get_active_locations()
         loc_ids   = list(locations.values_list('id', flat=True))
 
-        if location_filter and not locations.filter(id=location_filter).exists():
+        if location_filter and location_filter != 'all' and not locations.filter(id=location_filter).exists():
             return Response({'error': 'Invalid location.'}, status=status.HTTP_400_BAD_REQUEST)
 
         task_qs = (
             Task.objects
-            .filter(location_id__in=loc_ids, assignments__status='pending')
+            .filter(location_id__in=loc_ids)
             .select_related('location', 'created_by')
             .prefetch_related(
                 Prefetch('assignments', queryset=TaskAssignment.objects.select_related('employee', 'approved_by', 'rejected_by'))
             )
-            .distinct()
             .order_by('-created_at')
         )
 
-        if location_filter:
+        if location_filter and location_filter != 'all':
             task_qs = task_qs.filter(location_id=location_filter)
+
+        if status_filter and status_filter != 'all':
+            task_qs = task_qs.filter(assignments__status=status_filter).distinct()
+
+        if period_filter and period_filter not in ('all', 'none'):
+            today = timezone.localdate()
+            if period_filter == 'today':
+                task_qs = task_qs.filter(created_at__date=today)
+            elif period_filter == 'weekly':
+                task_qs = task_qs.filter(created_at__date__gte=today - timedelta(days=7))
+            elif period_filter == 'monthly':
+                task_qs = task_qs.filter(created_at__date__gte=today - timedelta(days=30))
+            elif period_filter == 'yearly':
+                task_qs = task_qs.filter(created_at__date__gte=today - timedelta(days=365))
 
         if search:
             task_qs = task_qs.filter(
@@ -369,22 +384,21 @@ class DistrictManagerTaskView(APIView):
                 Q(assignments__employee__last_name__icontains=search)
             ).distinct()
 
-        stats = TaskAssignment.objects.filter(task__location_id__in=loc_ids).aggregate(
-            total   = Count('id'),
-            pending = Count(Case(When(status='pending', then=1), output_field=IntegerField())),
-            overdue = Count(Case(When(status='overdue', then=1), output_field=IntegerField())),
+        stats_data = TaskAssignment.objects.filter(task__location_id__in=loc_ids).aggregate(
+            all_tasks = Count('id'),
+            overdue   = Count(Case(When(status='overdue',  then=1), output_field=IntegerField())),
+            completed = Count(Case(When(status='approved', then=1), output_field=IntegerField())),
+            rejected  = Count(Case(When(status='rejected', then=1), output_field=IntegerField())),
         )
 
-        paginator           = PageNumberPagination()
-        paginator.page_size = 5
-        page                = paginator.paginate_queryset(task_qs, request)
-        serializer          = TaskListSerializer(page, many=True)
-        paginated           = paginator.get_paginated_response(serializer.data).data
+        paginator  = PageNumberPagination()
+        page       = paginator.paginate_queryset(task_qs, request)
+        serializer = TaskListSerializer(page, many=True)
+        paginated  = paginator.get_paginated_response(serializer.data)
 
         return Response({
-            'stats': {'total': stats['total'], 'pending': stats['pending'], 'overdue': stats['overdue']},
-            'tasks':      paginated['results'],
-            'tasks_meta': {'count': paginated['count'], 'next': paginated['next'], 'previous': paginated['previous']},
+            'tasks': paginated.data,
+            'stats': stats_data,
         }, status=status.HTTP_200_OK)
 
     def post(self, request):

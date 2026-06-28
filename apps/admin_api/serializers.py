@@ -955,6 +955,13 @@ class AdminNotificationCreateSerializer(serializers.Serializer):
                 errors.append(f"You cannot send a notification to yourself.")
             elif recipient.role not in allowed:
                 errors.append(f"You cannot send to '{recipient.get_role_display()}' ({recipient.email}).")
+            # branch managers can only notify employees at their own location
+            elif (
+                sender.role == 'branch_manager'
+                and recipient.role in EMPLOYEE_NOTIFICATION_ROLES
+                and recipient.location_id != sender.location_id
+            ):
+                errors.append(f"You can only send to employees at your own location ({recipient.email}).")
         if errors:
             raise serializers.ValidationError({"recipients": errors})
         return data

@@ -200,8 +200,21 @@ class ResetPasswordView(APIView):
 # ================================================================
 
 class LocationViewSet(viewsets.ModelViewSet):
-    permission_classes = [IsSuperAdminOrDistrictManager]
-    queryset           = Location.objects.all().order_by('-created_at')
+    queryset = Location.objects.all().order_by('-created_at')
+
+    def get_permissions(self):
+        # Read access: super admin, district manager, branch manager.
+        # Write access: super admin and district manager only.
+        if self.action in ['list', 'retrieve']:
+            return [IsAdminUser()]
+        return [IsSuperAdminOrDistrictManager()]
+
+    def get_queryset(self):
+        qs = Location.objects.all().order_by('-created_at')
+        # Branch managers are scoped to their own location only.
+        if self.request.user.role == 'branch_manager':
+            qs = qs.filter(id=self.request.user.location_id)
+        return qs
 
     def get_serializer_class(self):
         if self.action == 'list':
@@ -216,7 +229,8 @@ class LocationViewSet(viewsets.ModelViewSet):
             total_locations  = Count('id'),
             active_locations = Count(Case(When(status='active', then=1), output_field=IntegerField())),
         )
-        total_staff = User.objects.filter(is_active=True, location__isnull=False).count()
+        loc_ids     = list(queryset.values_list('id', flat=True))
+        total_staff = User.objects.filter(is_active=True, location_id__in=loc_ids).count()
 
         stats = LocationStatsSerializer({
             'total_locations':  stats_data['total_locations'],

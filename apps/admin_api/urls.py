@@ -1,7 +1,7 @@
 # apps/admin_api/urls.py
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from .district_views import DistrictManagerDashboardView, DistrictManagerLocationsView, DistrictManagerReportsView, DistrictManagerTaskView, DistrictManagerTaskDetailView, DistrictManagerLocationEmployeesView, DistrictManagerUserAttendanceListView, DistrictManagerVerificationActionView, DistrictManagerVerificationView,DistrictManagerProfileView, DistrictManagerChangePasswordView,DistrictManagerEmployeePerformanceView,DistrictManagerEmployeeAttendanceDetailView, DistrictManagerPerformanceDashboardView
+from .district_views import DistrictManagerDashboardView, DistrictManagerLocationsView, DistrictManagerReportsView, DistrictManagerTaskView, DistrictManagerTaskDetailView, DistrictManagerLocationEmployeesView, DistrictManagerEmployeesView, DistrictManagerUserAttendanceListView, DistrictManagerVerificationActionView, DistrictManagerVerificationView,DistrictManagerProfileView, DistrictManagerChangePasswordView,DistrictManagerEmployeePerformanceView,DistrictManagerEmployeeAttendanceDetailView, DistrictManagerPerformanceDashboardView
 from .views import (
     AdminChangePasswordView,
     AdminLoginView,
@@ -87,6 +87,7 @@ urlpatterns = [
     path('district-manager/dashboard/', DistrictManagerDashboardView.as_view(), name='district-manager-dashboard'),
     path('district-manager/tasks/',                            DistrictManagerTaskView.as_view(),              name='district-manager-tasks'),
     path('district-manager/tasks/<int:pk>/',                   DistrictManagerTaskDetailView.as_view(),        name='district-manager-task-detail'),
+    path('district-manager/employees/',                        DistrictManagerEmployeesView.as_view(),         name='district-manager-employees'),
     path('district-manager/locations/<int:pk>/employees/',     DistrictManagerLocationEmployeesView.as_view(), name='district-manager-location-employees'),
     path('district-manager/verifications/',DistrictManagerVerificationView.as_view(),name='district-manager-verifications'),
     path('district-manager/verifications/<int:pk>/<str:action>/',DistrictManagerVerificationActionView.as_view(),name='district-manager-verification-action'),

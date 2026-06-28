@@ -508,6 +508,75 @@ class DistrictManagerLocationEmployeesView(APIView):
 
 
 # ================================================================
+# DISTRICT MANAGER — ALL EMPLOYEES (across all locations)
+# ================================================================
+
+class DistrictManagerEmployeesView(APIView):
+    """
+    GET /api/admin/district-manager/employees/
+    All assignable employees across every active location.
+    Optional filters: ?location=<id>  ?search=<name>
+    """
+    permission_classes = [IsDistrictManager]
+
+    def get(self, request):
+        search          = request.query_params.get('search', '').strip()
+        location_filter = request.query_params.get('location')
+
+        locations = get_active_locations()
+        loc_ids   = list(locations.values_list('id', flat=True))
+
+        # FIX 4: validate location_filter
+        if location_filter and not locations.filter(id=location_filter).exists():
+            return Response({'error': 'Invalid location.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        emp_qs = (
+            User.objects
+            .filter(location_id__in=loc_ids, role__in=ASSIGNABLE_ROLES, is_active=True)
+            .select_related('location')
+            .order_by('first_name', 'last_name')
+        )
+
+        if location_filter:
+            emp_qs = emp_qs.filter(location_id=location_filter)
+
+        if search:
+            emp_qs = emp_qs.filter(
+                Q(first_name__icontains=search) |
+                Q(last_name__icontains=search)
+            )
+
+        employees = [
+            {
+                'id':            emp.id,
+                'name':          f"{emp.first_name} {emp.last_name}".strip(),
+                'email':         emp.email,
+                'role':          emp.role,
+                'role_display':  emp.get_role_display(),
+                'location_id':   emp.location.id   if emp.location else None,
+                'location_name': emp.location.name if emp.location else None,
+                'profile_photo': emp.profile_photo,
+            }
+            for emp in emp_qs
+        ]
+
+        paginator           = PageNumberPagination()
+        paginator.page_size = 15
+        page                = paginator.paginate_queryset(employees, request)
+        paginated           = paginator.get_paginated_response(page).data
+
+        return Response({
+            'employees':      paginated['results'],
+            'employees_meta': {
+                'count':    paginated['count'],
+                'next':     paginated['next'],
+                'previous': paginated['previous'],
+            },
+            'filter_options': {'locations': list(locations.values('id', 'name'))},
+        }, status=status.HTTP_200_OK)
+
+
+# ================================================================
 # DISTRICT MANAGER — VERIFICATIONS
 # ================================================================
 

@@ -134,18 +134,18 @@ class DistrictManagerDashboardView(APIView):
         if location_filter and not locations.filter(id=location_filter).exists():
             return Response({'error': 'Invalid location.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # ── Q2: Bulk task stats per location ──────────────────────
+        # ── Q2: Bulk task stats per location (via assignments) ────
         task_bulk_qs = (
-            Task.objects
-            .filter(location_id__in=loc_ids)
-            .values('location_id')
+            TaskAssignment.objects
+            .filter(task__location_id__in=loc_ids)
+            .values('task__location_id')
             .annotate(
                 total     = Count('id'),
-                completed = Count(Case(When(status__in=['completed', 'approved'], then=1), output_field=IntegerField())),
-                overdue   = Count(Case(When(status='overdue', then=1), output_field=IntegerField())),
+                completed = Count(Case(When(status='approved', then=1), output_field=IntegerField())),
+                overdue   = Count(Case(When(status='overdue',  then=1), output_field=IntegerField())),
             )
         )
-        task_map = {row['location_id']: row for row in task_bulk_qs}
+        task_map = {row['task__location_id']: row for row in task_bulk_qs}
 
         # ── Q3: Bulk employee count per location ──────────────────
         emp_bulk_qs = (
@@ -167,16 +167,16 @@ class DistrictManagerDashboardView(APIView):
         for row in att_loc_qs:
             att_loc_map.setdefault(row['location_id'], {})[row['status']] = row['total']
 
-        # ── Q5: Weekly task activity chart ────────────────────────
+        # ── Q5: Weekly task activity chart (via assignments) ──────
         chart_qs = (
-            Task.objects
-            .filter(location_id__in=loc_ids, created_at__date__gte=week_start)
-            .values('created_at__date', 'status')
+            TaskAssignment.objects
+            .filter(task__location_id__in=loc_ids, task__created_at__date__gte=week_start)
+            .values('task__created_at__date', 'status')
             .annotate(total=Count('id'))
         )
         chart_map = {}
         for row in chart_qs:
-            chart_map.setdefault(row['created_at__date'], {})[row['status']] = row['total']
+            chart_map.setdefault(row['task__created_at__date'], {})[row['status']] = row['total']
 
         weekly_task_activity = []
         for i in range(6, -1, -1):
@@ -185,15 +185,8 @@ class DistrictManagerDashboardView(APIView):
             weekly_task_activity.append({
                 'date':      str(day),
                 'day':       day.strftime('%a'),
-                'assigned': (
-                    day_data.get('pending',        0) +
-                    day_data.get('completed',       0) +
-                    day_data.get('approved',        0) +
-                    day_data.get('overdue',         0) +
-                    day_data.get('rejected',        0) +
-                    day_data.get('awaiting_review', 0)
-                ),
-                'completed': day_data.get('completed', 0) + day_data.get('approved', 0),
+                'assigned':  sum(day_data.values()),
+                'completed': day_data.get('approved', 0),
             })
 
         # ── Location performance cards ────────────────────────────
@@ -989,18 +982,18 @@ class DistrictManagerEmployeePerformanceView(APIView):
             id__in = emp_ids
         ).select_related('location').order_by('first_name')
 
-        # ── Bulk task stats ───────────────────────────────────────
-        task_rows = Task.objects.filter(
-            assigned_to_id__in = emp_ids,
-            created_at__gte     = start_datetime,
-        ).values('assigned_to_id').annotate(
+        # ── Bulk task stats (via assignments) ─────────────────────
+        task_rows = TaskAssignment.objects.filter(
+            employee_id__in     = emp_ids,
+            task__created_at__gte = start_datetime,
+        ).values('employee_id').annotate(
             total_tasks     = Count('id'),
             completed_tasks = Count(
-                Case(When(status__in=['completed', 'approved'], then=1),
+                Case(When(status='approved', then=1),
                      output_field=IntegerField())
             ),
         )
-        task_map = {row['assigned_to_id']: row for row in task_rows}
+        task_map = {row['employee_id']: row for row in task_rows}
 
         # ── Bulk attendance stats ─────────────────────────────────
         attendance_rows = Attendance.objects.filter(
@@ -1131,25 +1124,26 @@ class DistrictManagerPerformanceDashboardView(APIView):
         if not location_ids:
             return Response({'task_log': []}, status=status.HTTP_200_OK)
 
-        # ── 10 most recent tasks ──────────────────────────────────
-        task_log_qs = Task.objects.filter(
-            location_id__in=location_ids,
+        # ── 10 most recent task assignments ───────────────────────
+        task_log_qs = TaskAssignment.objects.filter(
+            task__location_id__in=location_ids,
         ).select_related(
-            'assigned_to', 'location', 'created_by'
-        ).order_by('-created_at')[:10]
+            'employee', 'task', 'task__location', 'task__created_by'
+        ).order_by('-task__created_at')[:10]
 
         task_log = [
             {
-                'id':               task.id,
-                'title':            task.title,
-                'assigned_to':      f"{task.assigned_to.first_name} {task.assigned_to.last_name}".strip() if task.assigned_to else '—',
-                'location':         task.location.name if task.location else '—',
-                'assigned_by':      f"{task.created_by.first_name} {task.created_by.last_name}".strip() if task.created_by else '—',
-                'assigned_by_role': task.created_by.get_role_display() if task.created_by else '—',
-                'due_date':         task.due_date,
-                'status':           task.status,
+                'id':               a.task.id,
+                'assignment_id':    a.id,
+                'title':            a.task.title,
+                'assigned_to':      f"{a.employee.first_name} {a.employee.last_name}".strip() if a.employee else '—',
+                'location':         a.task.location.name if a.task.location else '—',
+                'assigned_by':      f"{a.task.created_by.first_name} {a.task.created_by.last_name}".strip() if a.task.created_by else '—',
+                'assigned_by_role': a.task.created_by.get_role_display() if a.task.created_by else '—',
+                'due_date':         a.task.due_date,
+                'status':           a.status,
             }
-            for task in task_log_qs
+            for a in task_log_qs
         ]
 
         return Response({'task_log': task_log}, status=status.HTTP_200_OK)

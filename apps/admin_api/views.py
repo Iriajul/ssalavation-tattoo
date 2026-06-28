@@ -2889,11 +2889,11 @@ class AdminNotificationViewSet(viewsets.ViewSet):
             .select_related('location')
         )
 
-        # branch managers can only notify employees at their own location
+        # branch managers can notify all admin roles, but only employees at
+        # their own location (mirrors the send validation).
         if request.user.role == 'branch_manager' and request.user.location_id:
-            users = users.filter(
-                Q(role='district_manager') |
-                Q(role__in=EMPLOYEE_ROLES, location_id=request.user.location_id)
+            users = users.exclude(
+                Q(role__in=EMPLOYEE_ROLES) & ~Q(location_id=request.user.location_id)
             )
 
         search   = request.query_params.get('search', '').strip()

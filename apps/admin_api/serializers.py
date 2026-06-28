@@ -425,7 +425,7 @@ class TaskListSerializer(serializers.ModelSerializer):
                 'is_fired':  a.is_fired,
                 'can_fire':  a.status == 'overdue' and not a.is_fired,
             }
-            for a in obj.assignments.select_related('employee').all()
+            for a in obj.assignments.all()
         ]
 
     def get_status_counts(self, obj):
@@ -909,7 +909,7 @@ class BranchManagerTaskListSerializer(serializers.ModelSerializer):
                 'status':   a.status,
                 'is_fired': a.is_fired,
             }
-            for a in obj.assignments.select_related('employee').all()
+            for a in obj.assignments.all()
         ]
 
     def get_status_counts(self, obj):
@@ -922,7 +922,7 @@ class BranchManagerTaskListSerializer(serializers.ModelSerializer):
     def get_can_edit(self, obj):
         request = self.context.get('request')
         if request and request.user:
-            has_pending = obj.assignments.filter(status='pending').exists()
+            has_pending = any(a.status == 'pending' for a in obj.assignments.all())
             return has_pending and obj.created_by_id == request.user.id
         return False
 

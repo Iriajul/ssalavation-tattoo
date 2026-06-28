@@ -932,10 +932,15 @@ class BranchManagerTaskListSerializer(serializers.ModelSerializer):
 
 EMPLOYEE_NOTIFICATION_ROLES = ['tattoo_artist', 'body_piercer', 'staff']
 
+# Full mesh: any admin role can notify any admin role (peers + upward).
+# Employees are receive-only. The self-send block and the branch-manager
+# own-location limit for employees are enforced separately in validate().
+ADMIN_NOTIFICATION_ROLES = ['super_admin', 'district_manager', 'branch_manager']
+
 ALLOWED_RECIPIENT_ROLES = {
-    'super_admin':      ['district_manager', 'branch_manager'] + EMPLOYEE_NOTIFICATION_ROLES,
-    'district_manager': ['branch_manager'] + EMPLOYEE_NOTIFICATION_ROLES,
-    'branch_manager':   ['district_manager'] + EMPLOYEE_NOTIFICATION_ROLES,
+    'super_admin':      ADMIN_NOTIFICATION_ROLES + EMPLOYEE_NOTIFICATION_ROLES,
+    'district_manager': ADMIN_NOTIFICATION_ROLES + EMPLOYEE_NOTIFICATION_ROLES,
+    'branch_manager':   ADMIN_NOTIFICATION_ROLES + EMPLOYEE_NOTIFICATION_ROLES,
 }
 
 class AdminNotificationCreateSerializer(serializers.Serializer):

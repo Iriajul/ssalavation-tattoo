@@ -27,6 +27,8 @@ from .models import (
 from .permissions import IsBranchManager, IsSuperAdmin, IsClockInUser, IsSuperAdminOrDistrictManager, IsAdminUser
 from .utils import check_file_size
 from .serializers import (
+    ALLOWED_RECIPIENT_ROLES,
+    EMPLOYEE_NOTIFICATION_ROLES,
     AdminChangePasswordSerializer,
     AdminProfileSerializer,
     AttendanceSerializer,
@@ -2877,12 +2879,8 @@ class AdminNotificationViewSet(viewsets.ViewSet):
 
     @action(detail=False, methods=['get'])
     def recipients(self, request):
-        EMPLOYEE_ROLES = ['tattoo_artist', 'body_piercer', 'staff']
-        allowed_roles  = {
-            'super_admin':      ['district_manager', 'branch_manager'] + EMPLOYEE_ROLES,
-            'district_manager': ['branch_manager'] + EMPLOYEE_ROLES,
-            'branch_manager':   ['district_manager'] + EMPLOYEE_ROLES,
-        }.get(request.user.role, [])
+        EMPLOYEE_ROLES = EMPLOYEE_NOTIFICATION_ROLES
+        allowed_roles  = ALLOWED_RECIPIENT_ROLES.get(request.user.role, [])
 
         users = (
             User.objects

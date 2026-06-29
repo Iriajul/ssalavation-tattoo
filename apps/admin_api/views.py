@@ -1667,8 +1667,8 @@ class SuperAdminQRView(APIView):
                 "token":            session.token,
                 "location":         session.location.name,
                 "location_id":      session.location.id,
-                "refresh_interval": session.refresh_interval,
-                "interval_display": session.get_refresh_interval_display(),
+                "duration_seconds": session.duration_seconds,
+                "duration_display": session.duration_display,
                 "created_at":       session.created_at,
                 # FIX 3: Send expires_at instead of seconds_left
                 # Let frontend calculate countdown — avoids stale data
@@ -1711,11 +1711,26 @@ class SuperAdminQRView(APIView):
         except Location.DoesNotExist:
             return Response({"error": "Location not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        refresh_interval = int(request.data.get('refresh_interval', 3))
-        valid_intervals  = [1, 3, 5, 10, 30]
-        if refresh_interval not in valid_intervals:
+        # Admin selects a custom lifetime as minutes + seconds.
+        try:
+            minutes = int(request.data.get('minutes', 0) or 0)
+            seconds = int(request.data.get('seconds', 0) or 0)
+        except (ValueError, TypeError):
             return Response(
-                {"error": f"Invalid interval. Choose from {valid_intervals}"},
+                {"error": "minutes and seconds must be whole numbers."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if minutes < 0 or seconds < 0:
+            return Response(
+                {"error": "minutes and seconds cannot be negative."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        duration_seconds = minutes * 60 + seconds
+        if duration_seconds <= 0:
+            return Response(
+                {"error": "Duration must be greater than 0 seconds."},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
@@ -1725,8 +1740,8 @@ class SuperAdminQRView(APIView):
             location         = location,
             created_by       = request.user,
             token            = generate_qr_token(),
-            refresh_interval = refresh_interval,
-            expires_at       = timezone.now() + timedelta(minutes=refresh_interval),
+            duration_seconds = duration_seconds,
+            expires_at       = timezone.now() + timedelta(seconds=duration_seconds),
             is_active        = True,
         )
 
@@ -1760,20 +1775,6 @@ class SuperAdminQRDetailView(APIView):
             "qr_session":  QRSessionSerializer(qr_session).data,
             "attendances": AttendanceSerializer(attendances, many=True).data,
         }, status=status.HTTP_200_OK)
-
-
-class SuperAdminQRIntervalListView(APIView):
-    permission_classes = [IsSuperAdminOrDistrictManager]
-
-    def get(self, request):
-        intervals = [
-            {"value": 1,  "label": "Every 1 minute"},
-            {"value": 3,  "label": "Every 3 minutes"},
-            {"value": 5,  "label": "Every 5 minutes"},
-            {"value": 10, "label": "Every 10 minutes"},
-            {"value": 30, "label": "Every 30 minutes"},
-        ]
-        return Response({"intervals": intervals}, status=status.HTTP_200_OK)
 
 
 # ================================================================
@@ -1817,8 +1818,8 @@ class ClockInUserQRView(APIView):
             "qr_session": {
                 "id":               qr_session.id,
                 "token":            qr_session.token,
-                "refresh_interval": qr_session.refresh_interval,
-                "interval_display": qr_session.get_refresh_interval_display(),
+                "duration_seconds": qr_session.duration_seconds,
+                "duration_display": qr_session.duration_display,
                 "created_at":       qr_session.created_at,
                 "expires_at":       qr_session.expires_at,
             },

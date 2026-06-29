@@ -764,15 +764,16 @@ class QRSessionSerializer(serializers.ModelSerializer):
     late_count       = serializers.IntegerField(read_only=True)
     absent_count     = serializers.IntegerField(read_only=True)
     is_expired       = serializers.BooleanField(read_only=True)
-    interval_display = serializers.CharField(
-        source='get_refresh_interval_display', read_only=True
-    )
+    duration_minutes      = serializers.IntegerField(read_only=True)
+    duration_seconds_part = serializers.IntegerField(read_only=True)
+    duration_display      = serializers.CharField(read_only=True)
 
     class Meta:
         model  = QRSession
         fields = [
-            'id', 'token', 'location', 'location_name', 'refresh_interval',
-            'interval_display', 'expires_at', 'is_active',
+            'id', 'token', 'location', 'location_name',
+            'duration_seconds', 'duration_minutes', 'duration_seconds_part',
+            'duration_display', 'expires_at', 'is_active',
             'is_expired', 'present_count', 'late_count',
             'absent_count', 'created_at',
         ]
@@ -785,14 +786,16 @@ class QRSessionListSerializer(serializers.ModelSerializer):
     absent_count     = serializers.IntegerField(read_only=True)
     location_name = serializers.CharField(source='location.name', read_only=True)
     location_id   = serializers.IntegerField(source='location.id', read_only=True)
-    interval_display = serializers.CharField(
-        source='get_refresh_interval_display', read_only=True
-    )
+    duration_minutes      = serializers.IntegerField(read_only=True)
+    duration_seconds_part = serializers.IntegerField(read_only=True)
+    duration_display      = serializers.CharField(read_only=True)
 
     class Meta:
         model  = QRSession
         fields = [
-            'id', 'token', 'refresh_interval', 'interval_display',
+            'id', 'token',
+            'duration_seconds', 'duration_minutes', 'duration_seconds_part',
+            'duration_display',
             'location_id',
             'location_name',
             'expires_at', 'is_active', 'present_count',

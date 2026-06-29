@@ -31,7 +31,6 @@ from .views import (
     # QRGenerateView,
     SuperAdminQRView,
     SuperAdminQRDetailView,
-    SuperAdminQRIntervalListView,
     ClockInUserQRView,
     BranchManagerLocationEmployeesView,
     AdminNotificationViewSet,
@@ -66,7 +65,6 @@ urlpatterns = [
     path('branch-manager/reports/', BranchManagerReportsView.as_view(), name='branch-manager-reports'),
     path('branch-manager/profile/password/', BranchManagerChangePasswordView.as_view(), name='branch-manager-change-password'),
     #── Super Admin QR ────────────────────────────────────────────
-    path('qr/intervals/',          SuperAdminQRIntervalListView.as_view(), name='qr-intervals'),   
     path('qr/<int:pk>/details/',   SuperAdminQRDetailView.as_view(),       name='super-admin-qr-details'),
     path('qr/',                    SuperAdminQRView.as_view(),              name='super-admin-qr'),
 

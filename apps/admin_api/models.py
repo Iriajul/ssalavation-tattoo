@@ -310,14 +310,6 @@ class ActivityLog(models.Model):
 
 class QRSession(models.Model):
 
-    INTERVAL_CHOICES = (
-        (1,  'Every 1 minute'),
-        (3,  'Every 3 minutes'),
-        (5,  'Every 5 minutes'),
-        (10, 'Every 10 minutes'),
-        (30, 'Every 30 minutes'),
-    )
-
     location         = models.ForeignKey(
         Location,
         on_delete=models.CASCADE,
@@ -330,7 +322,8 @@ class QRSession(models.Model):
         related_name='qr_sessions'
     )
     token            = models.CharField(max_length=64, unique=True)
-    refresh_interval = models.IntegerField(choices=INTERVAL_CHOICES, default=3)
+    # Total QR lifetime in seconds (admin-selected custom minutes + seconds).
+    duration_seconds = models.PositiveIntegerField(default=180)
     expires_at       = models.DateTimeField()
     is_active        = models.BooleanField(default=True)
     created_at       = models.DateTimeField(auto_now_add=True)
@@ -357,6 +350,23 @@ class QRSession(models.Model):
     @property
     def is_expired(self):
         return timezone.now() > self.expires_at
+
+    @property
+    def duration_minutes(self):
+        return self.duration_seconds // 60
+
+    @property
+    def duration_seconds_part(self):
+        return self.duration_seconds % 60
+
+    @property
+    def duration_display(self):
+        m, s = divmod(self.duration_seconds, 60)
+        if m and s:
+            return f"{m}m {s}s"
+        if m:
+            return f"{m}m"
+        return f"{s}s"
 
 
 # ================================================================

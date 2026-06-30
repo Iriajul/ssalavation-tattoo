@@ -25,7 +25,7 @@ from .models import (
     Instruction, ActivityLog, AdminNotification
 )
 from .permissions import IsBranchManager, IsSuperAdmin, IsClockInUser, IsSuperAdminOrDistrictManager, IsAdminUser
-from .task_helpers import collapsed_task_page
+from .task_helpers import collapsed_task_page, update_task_or_template
 from .utils import check_file_size
 from .serializers import (
     ALLOWED_RECIPIENT_ROLES,
@@ -540,25 +540,7 @@ class TaskViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
         vd = serializer.validated_data
 
-        for field in ['title', 'description', 'due_date', 'is_recurring', 'frequency', 'requires_photo']:
-            if field in vd:
-                setattr(task, field, vd[field])
-        task.save()
-
-        for emp in vd.get('_employees', []):
-            assignment, created = TaskAssignment.objects.get_or_create(task=task, employee=emp)
-            if created:
-                ActivityLog.objects.create(
-                    action='task_assigned', actor=request.user, task=task,
-                    target_user=emp, message=f'Task "{task.title}" assigned to {emp.get_full_name()}'
-                )
-                AppNotification.objects.create(
-                    recipient=emp, notif_type='task_assigned', title='New Task Assigned',
-                    message=f"{request.user.get_full_name() or 'Admin'} assigned you '{task.title}'",
-                    task=task,
-                )
-
-        task.refresh_from_db()
+        task = update_task_or_template(task, vd, request.user, 'Admin')
         return Response({'message': 'Task updated successfully.', 'task': TaskDetailSerializer(task).data}, status=status.HTTP_200_OK)
 
     def destroy(self, request, *args, **kwargs):
@@ -2506,18 +2488,7 @@ class BranchManagerTaskViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
         vd = serializer.validated_data
 
-        for field in ['title', 'description', 'due_date', 'is_recurring', 'frequency', 'requires_photo']:
-            if field in vd:
-                setattr(task, field, vd[field])
-        task.save()
-
-        for emp in vd.get('_employees', []):
-            assignment, created = TaskAssignment.objects.get_or_create(task=task, employee=emp)
-            if created:
-                ActivityLog.objects.create(action='task_assigned', actor=request.user, task=task, target_user=emp, message=f'Task "{task.title}" assigned to {emp.get_full_name()}')
-                AppNotification.objects.create(recipient=emp, notif_type='task_assigned', title='New Task Assigned', message=f"{request.user.get_full_name() or 'Manager'} assigned you '{task.title}'", task=task)
-
-        task.refresh_from_db()
+        task = update_task_or_template(task, vd, request.user, 'Manager')
         return Response({'message': 'Task updated successfully.', 'task': TaskDetailSerializer(task).data}, status=status.HTTP_200_OK)
 
     def destroy(self, request, *args, **kwargs):

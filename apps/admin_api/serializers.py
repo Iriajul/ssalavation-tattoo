@@ -655,12 +655,12 @@ class TaskCreateSerializer(RecurringTaskMixin, serializers.Serializer):
 
 
 class TaskUpdateSerializer(serializers.Serializer):
-    """Updates task fields; optionally adds new employees"""
+    """Updates task fields; optionally adds new employees / changes recurrence."""
     title          = serializers.CharField(max_length=255, required=False)
     description    = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     due_date       = serializers.DateField(required=False)
-    is_recurring   = serializers.BooleanField(required=False)
-    frequency      = serializers.ChoiceField(choices=['none', 'daily', 'weekly', 'monthly'], required=False)
+    start_date     = serializers.DateField(required=False)
+    recurrence     = RecurrenceSerializer(required=False)
     requires_photo = serializers.BooleanField(required=False)
     assigned_to    = serializers.ListField(
         child=serializers.IntegerField(), required=False,
@@ -671,6 +671,12 @@ class TaskUpdateSerializer(serializers.Serializer):
         today = timezone.localdate()
         if value < today:
             raise serializers.ValidationError(f"Due date cannot be in the past. Today is {today}.")
+        return value
+
+    def validate_start_date(self, value):
+        today = timezone.localdate()
+        if value < today:
+            raise serializers.ValidationError(f"start_date cannot be in the past. Today is {today}.")
         return value
 
     def validate(self, data):
@@ -700,10 +706,18 @@ class TaskUpdateSerializer(serializers.Serializer):
                 raise serializers.ValidationError({'assigned_to': errors})
             data['_employees'] = list(employees)
 
-        is_recurring = data.get('is_recurring')
-        frequency    = data.get('frequency')
-        if is_recurring is not None and not is_recurring:
-            data['frequency'] = 'none'
+        # recurrence/start_date may only be edited on a recurring task; due_date
+        # only makes sense for a one-time task.
+        task = self.context.get('task')
+        if task is not None:
+            if (data.get('recurrence') or data.get('start_date')) and not task.template_id:
+                raise serializers.ValidationError(
+                    {'recurrence': 'This is a one-time task; recurrence/start_date cannot be set.'}
+                )
+            if data.get('due_date') and task.template_id:
+                raise serializers.ValidationError(
+                    {'due_date': 'This is a recurring task; change start_date/recurrence instead of due_date.'}
+                )
         return data
 
 

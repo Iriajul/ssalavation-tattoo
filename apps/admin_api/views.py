@@ -268,7 +268,12 @@ class LocationViewSet(viewsets.ModelViewSet):
 
     def destroy(self, request, *args, **kwargs):
         location = self.get_object()
-        User.objects.filter(location=location).update(location=None)
+        assigned_count = User.objects.filter(location=location, is_active=True).count()
+        if assigned_count:
+            return Response(
+                {"error": f"Cannot delete this location — {assigned_count} active user(s) (employees/managers) are still assigned to it. Reassign or remove them first."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         location.delete()
         return Response(
             {"message": "Location deleted successfully."},
@@ -687,7 +692,7 @@ class LocationEmployeesView(APIView):
             location  = location,
             role__in  = ASSIGNABLE_ROLES,
             is_active = True
-        )
+        ).prefetch_related('work_schedules')
 
         serializer = LocationEmployeeSerializer(employees, many=True)
         return Response({
@@ -2546,7 +2551,7 @@ class BranchManagerLocationEmployeesView(APIView):
         if not manager.location:
             return Response({"error": "You are not assigned to any location."}, status=status.HTTP_400_BAD_REQUEST)
 
-        employees  = User.objects.filter(location=manager.location, role__in=ASSIGNABLE_ROLES, is_active=True)
+        employees  = User.objects.filter(location=manager.location, role__in=ASSIGNABLE_ROLES, is_active=True).prefetch_related('work_schedules')
         serializer = LocationEmployeeSerializer(employees, many=True)
         return Response({
             'location':    manager.location.name,

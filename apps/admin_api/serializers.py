@@ -755,12 +755,13 @@ class TaskStatsSerializer(serializers.Serializer):
 
 
 class LocationEmployeeSerializer(serializers.ModelSerializer):
-    name         = serializers.SerializerMethodField()
-    role_display = serializers.CharField(source='get_role_display', read_only=True)
+    name           = serializers.SerializerMethodField()
+    role_display   = serializers.CharField(source='get_role_display', read_only=True)
+    work_schedules = WorkScheduleSerializer(many=True, read_only=True)
 
     class Meta:
         model  = User
-        fields = ['id', 'name', 'email', 'role', 'role_display']
+        fields = ['id', 'name', 'email', 'role', 'role_display', 'work_schedules']
 
     def get_name(self, obj):
         return f"{obj.first_name} {obj.last_name}".strip() or obj.username

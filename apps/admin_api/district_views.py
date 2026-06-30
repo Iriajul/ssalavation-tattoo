@@ -19,7 +19,8 @@ from .serializers import (
     TaskApproveSerializer,
     TaskRejectSerializer,
     TaskListSerializer,
-    AdminChangePasswordSerializer
+    AdminChangePasswordSerializer,
+    WorkScheduleSerializer,
 )
 from django.db.models import Prefetch
 
@@ -485,6 +486,7 @@ class DistrictManagerLocationEmployeesView(APIView):
         employees = (
             User.objects
             .filter(location=location, role__in=ASSIGNABLE_ROLES, is_active=True)
+            .prefetch_related('work_schedules')
             .order_by('first_name')
         )
 
@@ -493,9 +495,10 @@ class DistrictManagerLocationEmployeesView(APIView):
             'location_name': location.name,
             'employees': [
                 {
-                    'id':   emp.id,
-                    'name': f"{emp.first_name} {emp.last_name}".strip(),
-                    'role': emp.get_role_display(),
+                    'id':             emp.id,
+                    'name':           f"{emp.first_name} {emp.last_name}".strip(),
+                    'role':           emp.get_role_display(),
+                    'work_schedules': WorkScheduleSerializer(emp.work_schedules.all(), many=True).data,
                 }
                 for emp in employees
             ],
@@ -529,6 +532,7 @@ class DistrictManagerEmployeesView(APIView):
             User.objects
             .filter(location_id__in=loc_ids, role__in=ASSIGNABLE_ROLES, is_active=True)
             .select_related('location')
+            .prefetch_related('work_schedules')
             .order_by('first_name', 'last_name')
         )
 
@@ -543,14 +547,15 @@ class DistrictManagerEmployeesView(APIView):
 
         employees = [
             {
-                'id':            emp.id,
-                'name':          f"{emp.first_name} {emp.last_name}".strip(),
-                'email':         emp.email,
-                'role':          emp.role,
-                'role_display':  emp.get_role_display(),
-                'location_id':   emp.location.id   if emp.location else None,
-                'location_name': emp.location.name if emp.location else None,
-                'profile_photo': emp.profile_photo,
+                'id':             emp.id,
+                'name':           f"{emp.first_name} {emp.last_name}".strip(),
+                'email':          emp.email,
+                'role':           emp.role,
+                'role_display':   emp.get_role_display(),
+                'location_id':    emp.location.id   if emp.location else None,
+                'location_name':  emp.location.name if emp.location else None,
+                'profile_photo':  emp.profile_photo,
+                'work_schedules': WorkScheduleSerializer(emp.work_schedules.all(), many=True).data,
             }
             for emp in emp_qs
         ]

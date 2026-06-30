@@ -401,27 +401,62 @@ def _task_recurrence(obj):
     return None
 
 
+def _series_status_counts(obj, context):
+    """
+    status_counts for a collapsed list row. For a recurring task, return the
+    series-level aggregate from `series_meta` in context; otherwise count the
+    task's own assignments. Falls back gracefully when no series_meta is present.
+    """
+    if obj.template_id:
+        meta = (context.get('series_meta') or {}).get(obj.template_id)
+        if meta and 'status_counts' in meta:
+            return meta['status_counts']
+    counts = {'pending': 0, 'awaiting_review': 0, 'approved': 0, 'rejected': 0, 'overdue': 0}
+    for a in obj.assignments.all():
+        if a.status in counts:
+            counts[a.status] += 1
+    return counts
+
+
 class TaskListSerializer(serializers.ModelSerializer):
-    """Lightweight serializer for task list — task + assignment summary"""
-    task_id       = serializers.IntegerField(source='id', read_only=True)
-    assignments   = serializers.SerializerMethodField()
-    status_counts = serializers.SerializerMethodField()
-    location_name = serializers.CharField(source='location.name', read_only=True)
-    created_by    = TaskUserSerializer(read_only=True)
-    recurrence    = serializers.SerializerMethodField()
+    """Lightweight serializer for task list — task + assignment summary (collapsed)."""
+    task_id           = serializers.IntegerField(source='id', read_only=True)
+    template_id       = serializers.SerializerMethodField()
+    assignments       = serializers.SerializerMethodField()
+    status_counts     = serializers.SerializerMethodField()
+    location_name     = serializers.CharField(source='location.name', read_only=True)
+    created_by        = TaskUserSerializer(read_only=True)
+    recurrence        = serializers.SerializerMethodField()
+    next_due_date     = serializers.SerializerMethodField()
+    total_occurrences = serializers.SerializerMethodField()
 
     class Meta:
         model  = Task
         fields = [
-            'task_id', 'title', 'description',
+            'task_id', 'template_id', 'title', 'description',
             'location', 'location_name',
-            'due_date', 'is_recurring', 'frequency', 'recurrence', 'requires_photo',
+            'due_date', 'next_due_date', 'is_recurring', 'frequency', 'recurrence',
+            'total_occurrences', 'requires_photo',
             'created_by', 'created_at',
             'assignments', 'status_counts',
         ]
 
+    def get_template_id(self, obj):
+        return obj.template_id
+
     def get_recurrence(self, obj):
         return _task_recurrence(obj)
+
+    def get_next_due_date(self, obj):
+        # The collapsed row's representative IS the next occurrence, so due_date is it.
+        return obj.due_date if obj.template_id else None
+
+    def get_total_occurrences(self, obj):
+        if obj.template_id:
+            meta = (self.context.get('series_meta') or {}).get(obj.template_id)
+            if meta:
+                return meta.get('total_occurrences', 1)
+        return 1
 
     def get_assignments(self, obj):
         return [
@@ -441,11 +476,7 @@ class TaskListSerializer(serializers.ModelSerializer):
         ]
 
     def get_status_counts(self, obj):
-        counts = {'pending': 0, 'awaiting_review': 0, 'approved': 0, 'rejected': 0, 'overdue': 0}
-        for a in obj.assignments.all():
-            if a.status in counts:
-                counts[a.status] += 1
-        return counts
+        return _series_status_counts(obj, self.context)
 
 
 class TaskDetailSerializer(serializers.ModelSerializer):
@@ -1004,22 +1035,42 @@ class BranchManagerTaskCreateSerializer(RecurringTaskMixin, serializers.Serializ
 
 
 class BranchManagerTaskListSerializer(serializers.ModelSerializer):
-    task_id      = serializers.IntegerField(source='id', read_only=True)
-    assignments  = serializers.SerializerMethodField()
-    status_counts = serializers.SerializerMethodField()
-    submitted_at = serializers.DateTimeField(source='created_at', format='%m/%d/%Y', read_only=True)
-    can_edit     = serializers.SerializerMethodField()
+    task_id           = serializers.IntegerField(source='id', read_only=True)
+    template_id       = serializers.SerializerMethodField()
+    assignments       = serializers.SerializerMethodField()
+    status_counts     = serializers.SerializerMethodField()
+    submitted_at      = serializers.DateTimeField(source='created_at', format='%m/%d/%Y', read_only=True)
+    can_edit          = serializers.SerializerMethodField()
+    recurrence        = serializers.SerializerMethodField()
+    next_due_date     = serializers.SerializerMethodField()
+    total_occurrences = serializers.SerializerMethodField()
 
     class Meta:
         model  = Task
         fields = [
-            'task_id', 'title', 'description',
+            'task_id', 'template_id', 'title', 'description',
             'assignments', 'status_counts',
-            'due_date', 'submitted_at',
-            'is_recurring', 'frequency',
+            'due_date', 'next_due_date', 'submitted_at',
+            'is_recurring', 'frequency', 'recurrence', 'total_occurrences',
             'requires_photo',
             'can_edit',
         ]
+
+    def get_template_id(self, obj):
+        return obj.template_id
+
+    def get_recurrence(self, obj):
+        return _task_recurrence(obj)
+
+    def get_next_due_date(self, obj):
+        return obj.due_date if obj.template_id else None
+
+    def get_total_occurrences(self, obj):
+        if obj.template_id:
+            meta = (self.context.get('series_meta') or {}).get(obj.template_id)
+            if meta:
+                return meta.get('total_occurrences', 1)
+        return 1
 
     def get_assignments(self, obj):
         return [
@@ -1034,11 +1085,7 @@ class BranchManagerTaskListSerializer(serializers.ModelSerializer):
         ]
 
     def get_status_counts(self, obj):
-        counts = {'pending': 0, 'awaiting_review': 0, 'approved': 0, 'rejected': 0, 'overdue': 0}
-        for a in obj.assignments.all():
-            if a.status in counts:
-                counts[a.status] += 1
-        return counts
+        return _series_status_counts(obj, self.context)
 
     def get_can_edit(self, obj):
         request = self.context.get('request')

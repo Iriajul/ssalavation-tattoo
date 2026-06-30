@@ -10,6 +10,7 @@ from datetime import datetime, time, timedelta, date
 from .models import Location, Task, TaskAssignment, Attendance, UserWorkSchedule, ActivityLog
 from apps.users.models import AppNotification
 from .permissions import IsDistrictManager
+from .task_helpers import collapsed_task_page
 from .utils import check_file_size
 from .serializers import (
     TaskDetailSerializer,
@@ -391,13 +392,11 @@ class DistrictManagerTaskView(APIView):
             rejected  = Count(Case(When(status='rejected', then=1), output_field=IntegerField())),
         )
 
-        paginator  = PageNumberPagination()
-        page       = paginator.paginate_queryset(task_qs, request)
-        serializer = TaskListSerializer(page, many=True)
-        paginated  = paginator.get_paginated_response(serializer.data)
+        # Collapse recurring series → one row each (one-time tasks unchanged).
+        tasks_data = collapsed_task_page(task_qs, request, TaskListSerializer)
 
         return Response({
-            'tasks': paginated.data,
+            'tasks': tasks_data,
             'stats': stats_data,
         }, status=status.HTTP_200_OK)
 

@@ -15,6 +15,7 @@ status / overdue / performance code path keeps working unchanged.
 from datetime import date, timedelta
 import calendar
 
+from django.db.models import Count
 from dateutil.rrule import rrule, DAILY, WEEKLY
 from dateutil.relativedelta import relativedelta
 
@@ -182,3 +183,82 @@ def generate_instances(template, horizon_days=GENERATION_HORIZON_DAYS, today=Non
         created_tasks.append(task)
 
     return created_tasks
+
+
+# ================================================================
+# LIST COLLAPSE — show one row per recurring series in admin lists
+# ================================================================
+
+def representative_task_ids(task_qs, today):
+    """
+    Given a Task queryset, return the set of task ids to show in a *collapsed* list:
+    every one-time task, plus ONE representative occurrence per recurring template
+    (the next upcoming occurrence, or the latest past one if none are upcoming).
+    """
+    from .models import Task
+
+    one_time = set(task_qs.filter(template__isnull=True).values_list('id', flat=True))
+
+    template_ids = list(
+        task_qs.filter(template__isnull=False)
+        .values_list('template_id', flat=True).distinct()
+    )
+    if not template_ids:
+        return one_time
+
+    rep = {}
+    # next upcoming occurrence per template (Postgres DISTINCT ON)
+    upcoming = (
+        Task.objects
+        .filter(template_id__in=template_ids, due_date__gte=today)
+        .order_by('template_id', 'due_date')
+        .distinct('template_id')
+    )
+    for t in upcoming:
+        rep[t.template_id] = t.id
+
+    # templates whose occurrences are all in the past → use the latest occurrence
+    missing = [tid for tid in template_ids if tid not in rep]
+    if missing:
+        past = (
+            Task.objects
+            .filter(template_id__in=missing)
+            .order_by('template_id', '-due_date')
+            .distinct('template_id')
+        )
+        for t in past:
+            rep[t.template_id] = t.id
+
+    return one_time | set(rep.values())
+
+
+def series_meta(template_ids):
+    """
+    Bulk per-template aggregates for collapsed rows:
+      { template_id: { 'total_occurrences': int, 'status_counts': {...} } }
+    Two queries total, regardless of how many templates.
+    """
+    from .models import Task, TaskAssignment
+
+    meta = {}
+    if not template_ids:
+        return meta
+
+    for row in (
+        Task.objects.filter(template_id__in=template_ids)
+        .values('template_id').annotate(n=Count('id'))
+    ):
+        meta.setdefault(row['template_id'], {})['total_occurrences'] = row['n']
+
+    for row in (
+        TaskAssignment.objects.filter(task__template_id__in=template_ids)
+        .values('task__template_id', 'status').annotate(n=Count('id'))
+    ):
+        d = meta.setdefault(row['task__template_id'], {})
+        counts = d.setdefault('status_counts', {
+            'pending': 0, 'awaiting_review': 0, 'approved': 0, 'rejected': 0, 'overdue': 0,
+        })
+        if row['status'] in counts:
+            counts[row['status']] = row['n']
+
+    return meta

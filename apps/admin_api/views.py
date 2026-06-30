@@ -25,6 +25,7 @@ from .models import (
     Instruction, ActivityLog, AdminNotification
 )
 from .permissions import IsBranchManager, IsSuperAdmin, IsClockInUser, IsSuperAdminOrDistrictManager, IsAdminUser
+from .task_helpers import collapsed_task_page
 from .utils import check_file_size
 from .serializers import (
     ALLOWED_RECIPIENT_ROLES,
@@ -491,12 +492,9 @@ class TaskViewSet(viewsets.ModelViewSet):
             completed = Count(Case(When(status='approved', then=1), output_field=IntegerField())),
             rejected  = Count(Case(When(status='rejected', then=1), output_field=IntegerField())),
         )
-        page = self.paginate_queryset(queryset)
-        if page is not None:
-            serializer = TaskListSerializer(page, many=True)
-            paginated  = self.get_paginated_response(serializer.data)
-            return Response({'tasks': paginated.data, 'stats': stats_data}, status=status.HTTP_200_OK)
-        return Response({'tasks': TaskListSerializer(queryset, many=True).data, 'stats': stats_data}, status=status.HTTP_200_OK)
+        # Collapse recurring series → one row each (one-time tasks unchanged).
+        tasks_data = collapsed_task_page(queryset, request, TaskListSerializer)
+        return Response({'tasks': tasks_data, 'stats': stats_data}, status=status.HTTP_200_OK)
 
     def create(self, request, *args, **kwargs):
         data = request.data.copy()
@@ -2443,7 +2441,7 @@ class BranchManagerTaskViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         manager  = self.request.user
         queryset = Task.objects.filter(location=manager.location).select_related(
-            'location', 'created_by'
+            'location', 'created_by', 'template'
         ).prefetch_related(
             Prefetch('assignments', queryset=TaskAssignment.objects.select_related('employee', 'approved_by', 'rejected_by'))
         ).order_by('-created_at')
@@ -2461,12 +2459,12 @@ class BranchManagerTaskViewSet(viewsets.ModelViewSet):
     def list(self, request, *args, **kwargs):
         manager  = request.user
         queryset = self.get_queryset().filter(assignments__status='pending').distinct()
-        page     = self.paginate_queryset(queryset)
-        if page is not None:
-            serializer = BranchManagerTaskListSerializer(page, many=True, context={'request': request})
-            paginated  = self.get_paginated_response(serializer.data)
-            return Response({'location': manager.location.name if manager.location else None, 'tasks': paginated.data}, status=status.HTTP_200_OK)
-        return Response({'location': manager.location.name if manager.location else None, 'tasks': BranchManagerTaskListSerializer(queryset, many=True, context={'request': request}).data}, status=status.HTTP_200_OK)
+        # Collapse recurring series → one row each (one-time tasks unchanged).
+        tasks_data = collapsed_task_page(
+            queryset, request, BranchManagerTaskListSerializer,
+            extra_context={'request': request},
+        )
+        return Response({'location': manager.location.name if manager.location else None, 'tasks': tasks_data}, status=status.HTTP_200_OK)
 
     def create(self, request, *args, **kwargs):
         manager = request.user

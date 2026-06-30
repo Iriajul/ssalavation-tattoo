@@ -423,6 +423,12 @@ class AppTaskViewSet(viewsets.ReadOnlyModelViewSet):
             'approved_by', 'rejected_by'
         ).order_by('-task__created_at')
 
+        # Active list shows only tasks due up to today — future recurring
+        # occurrences stay hidden until their day arrives. (retrieve/complete
+        # still reach any of the employee's assignments.)
+        if self.action == 'list':
+            queryset = queryset.filter(task__due_date__lte=timezone.localdate())
+
         status_filter = self.request.query_params.get('status')
         if status_filter:
             queryset = queryset.filter(status=status_filter)
@@ -438,7 +444,9 @@ class AppTaskViewSet(viewsets.ReadOnlyModelViewSet):
         user     = request.user
         queryset = self.filter_queryset(self.get_queryset())
 
-        stats_data = TaskAssignment.objects.filter(employee=user).aggregate(
+        stats_data = TaskAssignment.objects.filter(
+            employee=user, task__due_date__lte=timezone.localdate()
+        ).aggregate(
             total           = Count('id'),
             pending         = Count(Case(When(status='pending',         then=1), output_field=IntegerField())),
             awaiting_review = Count(Case(When(status='awaiting_review', then=1), output_field=IntegerField())),

@@ -2480,6 +2480,7 @@ class BranchManagerTaskViewSet(viewsets.ModelViewSet):
             return Response({"error": "Cannot edit a task that employees have already started."}, status=status.HTTP_400_BAD_REQUEST)
 
         data = request.data.copy()
+        data.pop('location', None)  # branch managers cannot move tasks to another location
         raw  = data.get('assigned_to')
         if raw is not None:
             data['assigned_to'] = raw if isinstance(raw, list) else [raw]

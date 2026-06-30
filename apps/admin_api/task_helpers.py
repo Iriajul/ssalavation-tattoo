@@ -73,11 +73,20 @@ def update_task_or_template(task, vd, actor, role_label='Admin'):
         for field in ['title', 'description', 'due_date', 'requires_photo']:
             if field in vd:
                 setattr(task, field, vd[field])
+        if 'location' in vd:
+            task.location = vd['location']
         task.save()
-        if employees:
+        if employees is not None:
+            # Replace the assignee set: drop pending assignments no longer wanted
+            # (keep started ones as history), add the new ones.
+            desired_ids = {e.id for e in employees}
+            TaskAssignment.objects.filter(task=task, status='pending').exclude(
+                employee_id__in=desired_ids
+            ).delete()
+            existing_ids = set(TaskAssignment.objects.filter(task=task).values_list('employee_id', flat=True))
             for emp in employees:
-                _, created = TaskAssignment.objects.get_or_create(task=task, employee=emp)
-                if created:
+                if emp.id not in existing_ids:
+                    TaskAssignment.objects.create(task=task, employee=emp)
                     _notify_assigned(actor, task, emp, role_label)
         task.refresh_from_db()
         return task
@@ -87,13 +96,13 @@ def update_task_or_template(task, vd, actor, role_label='Admin'):
     if 'title' in vd:           template.title = vd['title']
     if 'description' in vd:      template.description = vd['description']
     if 'requires_photo' in vd:   template.requires_photo = vd['requires_photo']
+    if 'location' in vd:         template.location = vd['location']
     if vd.get('start_date'):     template.start_date = vd['start_date']
     if vd.get('recurrence'):     template.rrule = build_rrule(vd['recurrence'])
     template.save()
 
-    if employees:
-        for emp in employees:
-            template.assignees.add(emp)
+    if employees is not None:
+        template.assignees.set(employees)  # replace the series' assignees
 
     today = timezone.localdate()
     # Keep occurrences that have already been acted on; delete the rest from today

@@ -655,16 +655,17 @@ class TaskCreateSerializer(RecurringTaskMixin, serializers.Serializer):
 
 
 class TaskUpdateSerializer(serializers.Serializer):
-    """Updates task fields; optionally adds new employees / changes recurrence."""
+    """Updates task fields; optionally moves location / changes assignees / recurrence."""
     title          = serializers.CharField(max_length=255, required=False)
     description    = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    location       = serializers.PrimaryKeyRelatedField(queryset=Location.objects.all(), required=False)
     due_date       = serializers.DateField(required=False)
     start_date     = serializers.DateField(required=False)
     recurrence     = RecurrenceSerializer(required=False)
     requires_photo = serializers.BooleanField(required=False)
     assigned_to    = serializers.ListField(
         child=serializers.IntegerField(), required=False,
-        help_text='Add these employee IDs as new assignments'
+        help_text='The full set of assignee IDs (replaces the current assignees).'
     )
 
     def validate_due_date(self, value):
@@ -680,14 +681,27 @@ class TaskUpdateSerializer(serializers.Serializer):
         return value
 
     def validate(self, data):
+        task                 = self.context.get('task')
+        allowed_location_ids = self.context.get('allowed_location_ids')
+        new_location         = data.get('location')
+
+        # The location used to validate assignees: the new one if the task is being
+        # moved, otherwise the task's current location.
+        effective_location = new_location or (task.location if task else None)
+
+        # District managers may only move a task to one of their locations.
+        if new_location and allowed_location_ids is not None and new_location.id not in allowed_location_ids:
+            raise serializers.ValidationError({'location': 'You can only move a task to one of your locations.'})
+
+        # Moving to a different location requires providing the new assignees.
+        moving = bool(new_location and task and new_location.id != task.location_id)
+        if moving and not data.get('assigned_to'):
+            raise serializers.ValidationError(
+                {'assigned_to': 'When changing location, provide assigned_to with employees of the new location.'}
+            )
+
         emp_ids = data.get('assigned_to', [])
         if emp_ids:
-            task     = self.context.get('task')
-            location = task.location if task else None
-            # District managers oversee multiple locations: when the view supplies
-            # `allowed_location_ids`, employees may come from any of those locations
-            # instead of being restricted to the task's own location.
-            allowed_location_ids = self.context.get('allowed_location_ids')
             employees = User.objects.filter(id__in=emp_ids, is_active=True)
             found_ids = set(employees.values_list('id', flat=True))
             errors = []
@@ -697,11 +711,14 @@ class TaskUpdateSerializer(serializers.Serializer):
             for emp in employees:
                 if emp.role not in ASSIGNABLE_ROLES:
                     errors.append(f"{emp.get_full_name()} is not a Tattoo Artist, Body Piercer, or Staff.")
-                elif allowed_location_ids is not None:
+                # District (allowed_location_ids) without a location change: employees
+                # may come from any of the district's locations. Otherwise they must
+                # match the effective (new or current) location.
+                elif allowed_location_ids is not None and not moving:
                     if emp.location_id not in allowed_location_ids:
                         errors.append(f"{emp.get_full_name()} does not belong to any of your locations.")
-                elif location and emp.location != location:
-                    errors.append(f"{emp.get_full_name()} does not belong to this task's location.")
+                elif effective_location and emp.location_id != effective_location.id:
+                    errors.append(f"{emp.get_full_name()} does not belong to the selected location.")
             if errors:
                 raise serializers.ValidationError({'assigned_to': errors})
             data['_employees'] = list(employees)

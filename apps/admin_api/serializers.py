@@ -4,7 +4,8 @@ from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 from django.contrib.auth.password_validation import validate_password
-from .models import FAQ, Attendance, Location, QRSession, SplashScreen, UserWorkSchedule, Task, TaskAssignment, Instruction, AdminNotification
+from .models import FAQ, Attendance, Location, QRSession, SplashScreen, UserWorkSchedule, Task, TaskAssignment, Instruction, AdminNotification, RecurringTaskTemplate
+from .recurrence import build_rrule, generate_instances, VALID_WEEKDAYS
 
 User = get_user_model()
 
@@ -462,8 +463,106 @@ class TaskDetailSerializer(serializers.ModelSerializer):
         return counts
 
 
-class TaskCreateSerializer(serializers.Serializer):
-    """Validates task + employee list for create"""
+class RecurrenceSerializer(serializers.Serializer):
+    """The recurrence pattern for a recurring task (no dates — start_date lives on the task)."""
+    frequency    = serializers.ChoiceField(choices=['daily', 'weekly', 'monthly', 'yearly'])
+    interval     = serializers.IntegerField(min_value=1, default=1)
+    weekdays     = serializers.ListField(
+        child=serializers.ChoiceField(choices=VALID_WEEKDAYS),
+        required=False, allow_null=True, allow_empty=True,
+    )
+    day_of_month = serializers.IntegerField(min_value=1, max_value=31, required=False, allow_null=True)
+
+    def validate(self, data):
+        freq     = data['frequency']
+        weekdays = data.get('weekdays')
+        dom      = data.get('day_of_month')
+
+        if freq == 'weekly':
+            if not weekdays:
+                raise serializers.ValidationError({'weekdays': 'weekdays is required for a weekly recurrence.'})
+        elif weekdays:
+            raise serializers.ValidationError({'weekdays': f'weekdays is only allowed for a weekly recurrence, not {freq}.'})
+
+        if freq == 'monthly':
+            if not dom:
+                raise serializers.ValidationError({'day_of_month': 'day_of_month is required for a monthly recurrence.'})
+        elif dom:
+            raise serializers.ValidationError({'day_of_month': f'day_of_month is only allowed for a monthly recurrence, not {freq}.'})
+
+        return data
+
+
+class RecurringTaskMixin:
+    """
+    Shared cross-field validation + create logic for the task-create serializers.
+
+    One-time  → requires due_date; rejects start_date + recurrence.
+    Recurring → requires start_date + recurrence; rejects due_date. Builds a
+                RecurringTaskTemplate and materializes its instances; returns the
+                first generated Task so the calling view's response/notification
+                flow is identical to a one-time task.
+    """
+
+    def _validate_recurrence_fields(self, data):
+        is_recurring = data.get('is_recurring', False)
+        today        = timezone.localdate()
+
+        if is_recurring:
+            if not data.get('start_date'):
+                raise serializers.ValidationError({'start_date': 'start_date is required for a recurring task.'})
+            if not data.get('recurrence'):
+                raise serializers.ValidationError({'recurrence': 'recurrence is required for a recurring task.'})
+            if data.get('due_date'):
+                raise serializers.ValidationError({'due_date': 'Do not send due_date for a recurring task; use start_date.'})
+            if data['start_date'] < today:
+                raise serializers.ValidationError({'start_date': f"start_date cannot be in the past. Today is {today}."})
+        else:
+            if not data.get('due_date'):
+                raise serializers.ValidationError({'due_date': 'due_date is required for a one-time task.'})
+            if data.get('start_date'):
+                raise serializers.ValidationError({'start_date': 'Do not send start_date for a one-time task.'})
+            if data.get('recurrence'):
+                raise serializers.ValidationError({'recurrence': 'Do not send recurrence for a one-time task.'})
+            data['frequency'] = 'none'
+
+    def _build_task(self, validated_data, employees, location, created_by):
+        """Create either a one-time Task or a recurring template; return a representative Task."""
+        is_recurring = validated_data.get('is_recurring', False)
+        recurrence   = validated_data.get('recurrence')
+        start_date   = validated_data.get('start_date')
+
+        if not is_recurring:
+            task = Task.objects.create(
+                title          = validated_data['title'],
+                description    = validated_data.get('description'),
+                location       = location,
+                created_by     = created_by,
+                due_date       = validated_data['due_date'],
+                is_recurring   = False,
+                frequency      = 'none',
+                requires_photo = validated_data.get('requires_photo', False),
+            )
+            for emp in employees:
+                TaskAssignment.objects.create(task=task, employee=emp)
+            return task
+
+        template = RecurringTaskTemplate.objects.create(
+            title          = validated_data['title'],
+            description    = validated_data.get('description'),
+            location       = location,
+            created_by     = created_by,
+            start_date     = start_date,
+            rrule          = build_rrule(recurrence),
+            requires_photo = validated_data.get('requires_photo', False),
+        )
+        template.assignees.set(employees)
+        created = generate_instances(template)
+        return created[0] if created else None
+
+
+class TaskCreateSerializer(RecurringTaskMixin, serializers.Serializer):
+    """Validates task + employee list for create (one-time or recurring)."""
     title          = serializers.CharField(max_length=255)
     description    = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     location       = serializers.PrimaryKeyRelatedField(queryset=Location.objects.all())
@@ -471,9 +570,10 @@ class TaskCreateSerializer(serializers.Serializer):
         child=serializers.IntegerField(), min_length=1,
         help_text='List of employee IDs'
     )
-    due_date       = serializers.DateField()
+    due_date       = serializers.DateField(required=False)
+    start_date     = serializers.DateField(required=False)
     is_recurring   = serializers.BooleanField(default=False)
-    frequency      = serializers.ChoiceField(choices=['none', 'daily', 'weekly', 'monthly'], default='none')
+    recurrence     = RecurrenceSerializer(required=False)
     requires_photo = serializers.BooleanField(default=False)
 
     def validate_due_date(self, value):
@@ -503,23 +603,17 @@ class TaskCreateSerializer(serializers.Serializer):
         if errors:
             raise serializers.ValidationError({'assigned_to': errors})
 
-        is_recurring = data.get('is_recurring', False)
-        frequency    = data.get('frequency', 'none')
-        if is_recurring and frequency == 'none':
-            raise serializers.ValidationError({'frequency': 'Please select a frequency for the recurring task.'})
-        if not is_recurring:
-            data['frequency'] = 'none'
+        self._validate_recurrence_fields(data)
 
         data['_employees'] = list(employees)
         return data
 
     def create(self, validated_data):
-        employees    = validated_data.pop('_employees')
-        emp_ids_raw  = validated_data.pop('assigned_to')
-        task = Task.objects.create(**validated_data)
-        for emp in employees:
-            TaskAssignment.objects.create(task=task, employee=emp)
-        return task
+        employees  = validated_data.pop('_employees')
+        validated_data.pop('assigned_to', None)
+        created_by = validated_data.get('created_by')
+        location   = validated_data['location']
+        return self._build_task(validated_data, employees, location, created_by)
 
 
 class TaskUpdateSerializer(serializers.Serializer):
@@ -847,14 +941,15 @@ class BranchManagerDashboardSerializer(serializers.Serializer):
  
     
 
-class BranchManagerTaskCreateSerializer(serializers.Serializer):
-    """Branch manager creates task for employees at their location"""
+class BranchManagerTaskCreateSerializer(RecurringTaskMixin, serializers.Serializer):
+    """Branch manager creates a task (one-time or recurring) for employees at their location."""
     title          = serializers.CharField(max_length=255)
     description    = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     assigned_to    = serializers.ListField(child=serializers.IntegerField(), min_length=1)
-    due_date       = serializers.DateField()
+    due_date       = serializers.DateField(required=False)
+    start_date     = serializers.DateField(required=False)
     is_recurring   = serializers.BooleanField(default=False)
-    frequency      = serializers.ChoiceField(choices=['none', 'daily', 'weekly', 'monthly'], default='none')
+    recurrence     = RecurrenceSerializer(required=False)
     requires_photo = serializers.BooleanField(default=False)
 
     def validate_due_date(self, value):
@@ -879,14 +974,18 @@ class BranchManagerTaskCreateSerializer(serializers.Serializer):
                 errors.append(f"{emp.get_full_name()} does not belong to your location.")
         if errors:
             raise serializers.ValidationError({'assigned_to': errors})
-        is_recurring = data.get('is_recurring', False)
-        frequency    = data.get('frequency', 'none')
-        if is_recurring and frequency == 'none':
-            raise serializers.ValidationError({'frequency': 'Please select a frequency for the recurring task.'})
-        if not is_recurring:
-            data['frequency'] = 'none'
+
+        self._validate_recurrence_fields(data)
+
         data['_employees'] = list(employees)
         return data
+
+    def create(self, validated_data):
+        employees  = validated_data.pop('_employees')
+        validated_data.pop('assigned_to', None)
+        created_by = validated_data.get('created_by')
+        location   = self.context.get('location')
+        return self._build_task(validated_data, employees, location, created_by)
 
 
 class BranchManagerTaskListSerializer(serializers.ModelSerializer):

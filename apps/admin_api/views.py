@@ -2480,16 +2480,10 @@ class BranchManagerTaskViewSet(viewsets.ModelViewSet):
 
         serializer = BranchManagerTaskCreateSerializer(data=data, context={'location': manager.location})
         serializer.is_valid(raise_exception=True)
-        vd = serializer.validated_data
+        task = serializer.save(created_by=request.user)
 
-        task = Task.objects.create(
-            title=vd['title'], description=vd.get('description'), location=manager.location,
-            due_date=vd['due_date'], is_recurring=vd.get('is_recurring', False),
-            frequency=vd.get('frequency', 'none'), requires_photo=vd.get('requires_photo', False),
-            created_by=request.user,
-        )
-        for emp in vd['_employees']:
-            TaskAssignment.objects.create(task=task, employee=emp)
+        for assignment in task.assignments.select_related('employee').all():
+            emp = assignment.employee
             ActivityLog.objects.create(action='task_assigned', actor=request.user, task=task, target_user=emp, message=f'Task "{task.title}" assigned to {emp.get_full_name()}')
             AppNotification.objects.create(recipient=emp, notif_type='task_assigned', title='New Task Assigned', message=f"{request.user.get_full_name() or 'Manager'} assigned you '{task.title}'", task=task)
 

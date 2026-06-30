@@ -111,6 +111,7 @@ class Task(models.Model):
         DAILY   = 'daily',   'Daily'
         WEEKLY  = 'weekly',  'Weekly'
         MONTHLY = 'monthly', 'Monthly'
+        YEARLY  = 'yearly',  'Yearly'
 
     ASSIGNABLE_ROLES = ['tattoo_artist', 'body_piercer', 'staff']
 
@@ -120,6 +121,13 @@ class Task(models.Model):
     created_by  = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
         null=True, blank=True, related_name='created_tasks'
+    )
+    # When set, this Task was generated from a recurring template.
+    # Null = a one-time task. Each instance carries its own due_date so all
+    # existing status/overdue/performance logic works unchanged.
+    template    = models.ForeignKey(
+        'RecurringTaskTemplate', on_delete=models.CASCADE,
+        null=True, blank=True, related_name='instances'
     )
     due_date       = models.DateField()
     is_recurring   = models.BooleanField(default=False)
@@ -184,6 +192,48 @@ class TaskAssignment(models.Model):
 
     def __str__(self):
         return f"{self.employee_id} → {self.task_id} [{self.status}]"
+
+
+# ================================================================
+# RECURRING TASK TEMPLATE
+# ================================================================
+
+class RecurringTaskTemplate(models.Model):
+    """
+    The definition of a recurring task (not a task itself).
+    A nightly/rolling generator expands `rrule` from `start_date` and creates
+    real Task rows (one per occurrence), copying these fields. Each generated
+    Task gets its own due_date = the occurrence date.
+    """
+    title          = models.CharField(max_length=255)
+    description    = models.TextField(blank=True, null=True)
+    location       = models.ForeignKey(
+        Location, on_delete=models.CASCADE, related_name='recurring_templates'
+    )
+    created_by     = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='created_recurring_templates'
+    )
+    assignees      = models.ManyToManyField(
+        settings.AUTH_USER_MODEL, related_name='recurring_templates'
+    )
+    start_date     = models.DateField()
+    rrule          = models.CharField(max_length=255)
+    requires_photo = models.BooleanField(default=False)
+    is_active      = models.BooleanField(default=True)
+    created_at     = models.DateTimeField(auto_now_add=True)
+    updated_at     = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'recurring_task_templates'
+        ordering = ['-created_at']
+        indexes  = [
+            models.Index(fields=['is_active'],             name='rtt_is_active_idx'),
+            models.Index(fields=['location', 'is_active'], name='rtt_loc_active_idx'),
+        ]
+
+    def __str__(self):
+        return f"Recurring: {self.title}"
 
 
 # ================================================================

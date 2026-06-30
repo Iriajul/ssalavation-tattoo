@@ -25,7 +25,7 @@ def collapsed_task_page(task_qs, request, serializer_class, page_size=15, extra_
     template_ids = list(
         collapsed.filter(template__isnull=False).values_list('template_id', flat=True)
     )
-    meta = series_meta(template_ids)
+    meta = series_meta(template_ids, today)
 
     paginator           = PageNumberPagination()
     paginator.page_size = page_size

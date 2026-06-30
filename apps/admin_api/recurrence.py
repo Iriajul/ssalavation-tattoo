@@ -232,10 +232,16 @@ def representative_task_ids(task_qs, today):
     return one_time | set(rep.values())
 
 
-def series_meta(template_ids):
+def series_meta(template_ids, today=None):
     """
     Bulk per-template aggregates for collapsed rows:
       { template_id: { 'total_occurrences': int, 'status_counts': {...} } }
+
+    - total_occurrences: every occurrence in the series (full schedule).
+    - status_counts: only occurrences that have actually come *due*
+      (due_date <= today). Future scheduled occurrences are NOT counted, so a
+      recurring task doesn't show e.g. "35 pending" for tasks not yet due.
+
     Two queries total, regardless of how many templates.
     """
     from .models import Task, TaskAssignment
@@ -244,6 +250,8 @@ def series_meta(template_ids):
     if not template_ids:
         return meta
 
+    today = today or date.today()
+
     for row in (
         Task.objects.filter(template_id__in=template_ids)
         .values('template_id').annotate(n=Count('id'))
@@ -251,7 +259,8 @@ def series_meta(template_ids):
         meta.setdefault(row['template_id'], {})['total_occurrences'] = row['n']
 
     for row in (
-        TaskAssignment.objects.filter(task__template_id__in=template_ids)
+        TaskAssignment.objects
+        .filter(task__template_id__in=template_ids, task__due_date__lte=today)
         .values('task__template_id', 'status').annotate(n=Count('id'))
     ):
         d = meta.setdefault(row['task__template_id'], {})

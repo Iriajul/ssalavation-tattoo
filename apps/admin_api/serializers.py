@@ -403,15 +403,20 @@ def _task_recurrence(obj):
 
 def _series_status_counts(obj, context):
     """
-    status_counts for a collapsed list row. For a recurring task, return the
-    series-level aggregate from `series_meta` in context; otherwise count the
-    task's own assignments. Falls back gracefully when no series_meta is present.
+    status_counts for a collapsed list row.
+
+    - Recurring task: the series-level aggregate from `series_meta` (counts only
+      occurrences that have come due). If nothing is due yet → all zeros (NOT the
+      representative's future assignments).
+    - One-time task: count its own assignments.
     """
+    zeros = {'pending': 0, 'awaiting_review': 0, 'approved': 0, 'rejected': 0, 'overdue': 0}
     if obj.template_id:
         meta = (context.get('series_meta') or {}).get(obj.template_id)
-        if meta and 'status_counts' in meta:
+        if meta is not None and 'status_counts' in meta:
             return meta['status_counts']
-    counts = {'pending': 0, 'awaiting_review': 0, 'approved': 0, 'rejected': 0, 'overdue': 0}
+        return dict(zeros)
+    counts = dict(zeros)
     for a in obj.assignments.all():
         if a.status in counts:
             counts[a.status] += 1

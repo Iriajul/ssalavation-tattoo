@@ -10,7 +10,7 @@ from datetime import datetime, time, timedelta, date
 from .models import Location, Task, TaskAssignment, Attendance, UserWorkSchedule, ActivityLog
 from apps.users.models import AppNotification
 from .permissions import IsDistrictManager
-from .task_helpers import collapsed_task_page, update_task_or_template
+from .task_helpers import collapsed_task_page, update_task_or_template, delete_task_or_series
 from .utils import check_file_size
 from .serializers import (
     TaskDetailSerializer,
@@ -463,10 +463,10 @@ class DistrictManagerTaskDetailView(APIView):
         task = self._get_task(pk, self._get_loc_ids())
         if not task:
             return Response({'error': 'Task not found.'}, status=status.HTTP_404_NOT_FOUND)
-        if task.assignments.exclude(status='pending').exists():
-            return Response({'error': 'Cannot delete a task that has been started by employees.'}, status=status.HTTP_400_BAD_REQUEST)
-        task.delete()
-        return Response({'message': 'Task deleted successfully.'}, status=status.HTTP_200_OK)
+        ok, message = delete_task_or_series(task)
+        if not ok:
+            return Response({'error': message}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'message': message}, status=status.HTTP_200_OK)
 
 
 # ================================================================

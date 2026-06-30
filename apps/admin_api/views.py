@@ -25,7 +25,7 @@ from .models import (
     Instruction, ActivityLog, AdminNotification
 )
 from .permissions import IsBranchManager, IsSuperAdmin, IsClockInUser, IsSuperAdminOrDistrictManager, IsAdminUser
-from .task_helpers import collapsed_task_page, update_task_or_template
+from .task_helpers import collapsed_task_page, update_task_or_template, delete_task_or_series
 from .utils import check_file_size
 from .serializers import (
     ALLOWED_RECIPIENT_ROLES,
@@ -545,10 +545,10 @@ class TaskViewSet(viewsets.ModelViewSet):
 
     def destroy(self, request, *args, **kwargs):
         task = self.get_object()
-        if task.assignments.exclude(status='pending').exists():
-            return Response({"error": "Cannot delete a task that has been started by employees."}, status=status.HTTP_400_BAD_REQUEST)
-        task.delete()
-        return Response({"message": "Task deleted successfully."}, status=status.HTTP_200_OK)
+        ok, message = delete_task_or_series(task)
+        if not ok:
+            return Response({"error": message}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": message}, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=['post'], url_path='approve')
     def approve(self, request, pk=None):
@@ -2496,10 +2496,10 @@ class BranchManagerTaskViewSet(viewsets.ModelViewSet):
         task = self.get_object()
         if task.created_by != request.user:
             return Response({"error": "You can only delete tasks you created."}, status=status.HTTP_403_FORBIDDEN)
-        if task.assignments.exclude(status='pending').exists():
-            return Response({"error": "Cannot delete a task that has been started by employees."}, status=status.HTTP_400_BAD_REQUEST)
-        task.delete()
-        return Response({"message": "Task deleted successfully."}, status=status.HTTP_200_OK)
+        ok, message = delete_task_or_series(task)
+        if not ok:
+            return Response({"error": message}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": message}, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=['post'], url_path='approve')
     def approve(self, request, pk=None):

@@ -121,3 +121,48 @@ def update_task_or_template(task, vd, actor, role_label='Admin'):
         or Task.objects.filter(template=template).order_by('-due_date').first()
     )
     return rep
+
+
+def delete_task_or_series(task):
+    """
+    Delete a task.
+
+    Recurring task (task.template_id): keep occurrences that have performance value
+    (any assignment already acted on — awaiting_review/approved/rejected/overdue) by
+    detaching them into standalone history tasks, then delete the template — which
+    cascades and removes only the remaining untouched (all-pending) upcoming
+    occurrences. So completed work is preserved and the series stops.
+
+    One-time task: unchanged — blocked if it has been started, else deleted.
+
+    Returns (ok: bool, message: str).
+    """
+    from .models import Task
+
+    if task.template_id:
+        template_id = task.template_id
+
+        kept_ids = list(
+            Task.objects.filter(
+                template_id=template_id,
+                assignments__status__in=['awaiting_review', 'approved', 'rejected', 'overdue'],
+            ).values_list('id', flat=True).distinct()
+        )
+        # Detach the history occurrences so the template's cascade won't delete them.
+        if kept_ids:
+            Task.objects.filter(id__in=kept_ids).update(
+                template=None, is_recurring=False, frequency='none',
+            )
+
+        # Deleting the template cascades and removes the untouched upcoming occurrences.
+        from .models import RecurringTaskTemplate
+        RecurringTaskTemplate.objects.filter(pk=template_id).delete()
+
+        if kept_ids:
+            return True, f"Recurring task deleted. {len(kept_ids)} completed occurrence(s) kept as history; upcoming ones removed."
+        return True, "Recurring task deleted successfully."
+
+    if task.assignments.exclude(status='pending').exists():
+        return False, "Cannot delete a task that has been started by employees."
+    task.delete()
+    return True, "Task deleted successfully."

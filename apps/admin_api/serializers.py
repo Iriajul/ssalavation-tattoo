@@ -1067,11 +1067,14 @@ class BranchManagerTaskListSerializer(serializers.ModelSerializer):
     recurrence        = serializers.SerializerMethodField()
     next_due_date     = serializers.SerializerMethodField()
     total_occurrences = serializers.SerializerMethodField()
+    location_name     = serializers.CharField(source='location.name', read_only=True)
+    location_id       = serializers.IntegerField(read_only=True)
 
     class Meta:
         model  = Task
         fields = [
             'task_id', 'template_id', 'title', 'description',
+            'location_id', 'location_name',
             'assignments', 'status_counts',
             'due_date', 'next_due_date', 'submitted_at',
             'is_recurring', 'frequency', 'recurrence', 'total_occurrences',

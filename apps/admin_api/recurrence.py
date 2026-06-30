@@ -58,6 +58,19 @@ def _parse_rrule(rrule_str):
     return parts
 
 
+def rrule_to_recurrence(rrule_str):
+    """Reverse of build_rrule(): RRULE string → the recurrence object the frontend uses."""
+    p        = _parse_rrule(rrule_str)
+    freq     = p.get('FREQ', '').lower()
+    interval = int(p.get('INTERVAL', 1))
+    out = {'frequency': freq, 'interval': interval, 'weekdays': None, 'day_of_month': None}
+    if freq == 'weekly':
+        out['weekdays'] = [w for w in p.get('BYDAY', '').split(',') if w]
+    elif freq == 'monthly':
+        out['day_of_month'] = int(p['BYMONTHDAY']) if p.get('BYMONTHDAY') else None
+    return out
+
+
 def _clamp_day(year, month, day):
     last = calendar.monthrange(year, month)[1]
     return date(year, month, min(day, last))

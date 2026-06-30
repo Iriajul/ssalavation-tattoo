@@ -5,7 +5,7 @@ from django.contrib.auth import get_user_model
 from django.utils import timezone
 from django.contrib.auth.password_validation import validate_password
 from .models import FAQ, Attendance, Location, QRSession, SplashScreen, UserWorkSchedule, Task, TaskAssignment, Instruction, AdminNotification, RecurringTaskTemplate
-from .recurrence import build_rrule, generate_instances, VALID_WEEKDAYS
+from .recurrence import build_rrule, generate_instances, rrule_to_recurrence, VALID_WEEKDAYS
 
 User = get_user_model()
 
@@ -394,6 +394,13 @@ class TaskAssignmentSerializer(serializers.ModelSerializer):
 # TASK SERIALIZERS
 # ================================================================
 
+def _task_recurrence(obj):
+    """The recurrence object for a task, read from its template (None for one-time tasks)."""
+    if obj.template_id and obj.template:
+        return rrule_to_recurrence(obj.template.rrule)
+    return None
+
+
 class TaskListSerializer(serializers.ModelSerializer):
     """Lightweight serializer for task list — task + assignment summary"""
     task_id       = serializers.IntegerField(source='id', read_only=True)
@@ -401,16 +408,20 @@ class TaskListSerializer(serializers.ModelSerializer):
     status_counts = serializers.SerializerMethodField()
     location_name = serializers.CharField(source='location.name', read_only=True)
     created_by    = TaskUserSerializer(read_only=True)
+    recurrence    = serializers.SerializerMethodField()
 
     class Meta:
         model  = Task
         fields = [
             'task_id', 'title', 'description',
             'location', 'location_name',
-            'due_date', 'is_recurring', 'frequency', 'requires_photo',
+            'due_date', 'is_recurring', 'frequency', 'recurrence', 'requires_photo',
             'created_by', 'created_at',
             'assignments', 'status_counts',
         ]
+
+    def get_recurrence(self, obj):
+        return _task_recurrence(obj)
 
     def get_assignments(self, obj):
         return [
@@ -444,16 +455,20 @@ class TaskDetailSerializer(serializers.ModelSerializer):
     status_counts = serializers.SerializerMethodField()
     created_by    = TaskUserSerializer(read_only=True)
     location_name = serializers.CharField(source='location.name', read_only=True)
+    recurrence    = serializers.SerializerMethodField()
 
     class Meta:
         model  = Task
         fields = [
             'task_id', 'title', 'description',
             'location', 'location_name',
-            'due_date', 'is_recurring', 'frequency', 'requires_photo',
+            'due_date', 'is_recurring', 'frequency', 'recurrence', 'requires_photo',
             'created_by', 'created_at', 'updated_at',
             'assignments', 'status_counts',
         ]
+
+    def get_recurrence(self, obj):
+        return _task_recurrence(obj)
 
     def get_status_counts(self, obj):
         counts = {'pending': 0, 'awaiting_review': 0, 'approved': 0, 'rejected': 0, 'overdue': 0}

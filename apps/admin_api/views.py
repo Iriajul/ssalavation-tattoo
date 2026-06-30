@@ -441,7 +441,7 @@ class TaskViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         queryset = Task.objects.select_related(
-            'location', 'created_by'
+            'location', 'created_by', 'template'
         ).prefetch_related(
             Prefetch('assignments', queryset=TaskAssignment.objects.select_related(
                 'employee', 'approved_by', 'rejected_by'

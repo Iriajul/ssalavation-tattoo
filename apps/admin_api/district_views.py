@@ -352,7 +352,7 @@ class DistrictManagerTaskView(APIView):
         task_qs = (
             Task.objects
             .filter(location_id__in=loc_ids)
-            .select_related('location', 'created_by')
+            .select_related('location', 'created_by', 'template')
             .prefetch_related(
                 Prefetch('assignments', queryset=TaskAssignment.objects.select_related('employee', 'approved_by', 'rejected_by'))
             )
@@ -427,7 +427,7 @@ class DistrictManagerTaskDetailView(APIView):
 
     def _get_task(self, pk, loc_ids):
         try:
-            return Task.objects.select_related('location', 'created_by').prefetch_related(
+            return Task.objects.select_related('location', 'created_by', 'template').prefetch_related(
                 Prefetch('assignments', queryset=TaskAssignment.objects.select_related('employee', 'approved_by', 'rejected_by'))
             ).get(pk=pk, location_id__in=loc_ids)
         except Task.DoesNotExist:

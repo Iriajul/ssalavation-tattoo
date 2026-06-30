@@ -459,21 +459,8 @@ class TaskListSerializer(serializers.ModelSerializer):
         return 1
 
     def get_assignments(self, obj):
-        return [
-            {
-                'assignment_id': a.id,
-                'task_id':       a.task_id,
-                'employee': {
-                    'employee_id': a.employee_id,
-                    'name': f"{a.employee.first_name} {a.employee.last_name}".strip() or a.employee.username,
-                    'role': a.employee.get_role_display(),
-                },
-                'status':    a.status,
-                'is_fired':  a.is_fired,
-                'can_fire':  a.status == 'overdue' and not a.is_fired,
-            }
-            for a in obj.assignments.all()
-        ]
+        # Full assignment shape (same as the task-detail endpoint).
+        return TaskAssignmentSerializer(obj.assignments.all(), many=True).data
 
     def get_status_counts(self, obj):
         return _series_status_counts(obj, self.context)
@@ -1073,16 +1060,8 @@ class BranchManagerTaskListSerializer(serializers.ModelSerializer):
         return 1
 
     def get_assignments(self, obj):
-        return [
-            {
-                'assignment_id': a.id,
-                'task_id':       a.task_id,
-                'employee': {'employee_id': a.employee_id, 'name': f"{a.employee.first_name} {a.employee.last_name}".strip(), 'role': a.employee.get_role_display()},
-                'status':   a.status,
-                'is_fired': a.is_fired,
-            }
-            for a in obj.assignments.all()
-        ]
+        # Full assignment shape (same as the task-detail endpoint).
+        return TaskAssignmentSerializer(obj.assignments.all(), many=True).data
 
     def get_status_counts(self, obj):
         return _series_status_counts(obj, self.context)

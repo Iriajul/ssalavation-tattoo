@@ -26,7 +26,7 @@ from .models import (
 )
 from .permissions import IsBranchManager, IsSuperAdmin, IsClockInUser, IsSuperAdminOrDistrictManager, IsAdminUser
 from .task_helpers import collapsed_task_page, update_task_or_template, delete_task_or_series
-from .utils import check_file_size
+from .utils import check_file_size, normalize_period
 from .serializers import (
     ALLOWED_RECIPIENT_ROLES,
     EMPLOYEE_NOTIFICATION_ROLES,
@@ -456,7 +456,7 @@ class TaskViewSet(viewsets.ModelViewSet):
 
         location_filter = self.request.query_params.get('location')
         status_filter   = self.request.query_params.get('status')
-        period_filter   = self.request.query_params.get('period')
+        period_filter   = normalize_period(self.request.query_params.get('period'), default=None)
         search          = self.request.query_params.get('search', '').strip()
 
         if location_filter and location_filter != 'all':
@@ -979,7 +979,7 @@ class PerformanceAnalyticsView(APIView):
     permission_classes = [IsSuperAdmin]
 
     def get(self, request):
-        period = request.query_params.get('period', 'today')
+        period = normalize_period(request.query_params.get('period'), 'today')
         now    = timezone.now()
 
         if period == 'today':
@@ -1122,7 +1122,7 @@ class ReportsAnalyticsView(APIView):
     def get(self, request):
         from dateutil.relativedelta import relativedelta
 
-        period          = request.query_params.get('period', 'today')
+        period          = normalize_period(request.query_params.get('period'), 'today')
         location_filter = request.query_params.get('location')
         user_filter     = request.query_params.get('user')
         now             = timezone.now()
@@ -2031,7 +2031,7 @@ class BranchManagerReportsView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        period        = request.query_params.get('period', 'weekly')
+        period        = normalize_period(request.query_params.get('period'), 'weekly')
         status_filter = request.query_params.get('status')
         search        = request.query_params.get('search', '').strip()
         user_id       = request.query_params.get('user')
@@ -2639,7 +2639,7 @@ class UserAttendanceView(APIView):
     def get(self, request):
         from django.db import models as db_models
 
-        period          = request.query_params.get('period', 'weekly')
+        period          = normalize_period(request.query_params.get('period'), 'weekly')
         location_filter = request.query_params.get('location')
         search          = request.query_params.get('search', '').strip()
         user_id         = request.query_params.get('user')

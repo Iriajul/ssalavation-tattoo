@@ -11,7 +11,7 @@ from .models import Location, Task, TaskAssignment, Attendance, UserWorkSchedule
 from apps.users.models import AppNotification
 from .permissions import IsDistrictManager
 from .task_helpers import collapsed_task_page, update_task_or_template, delete_task_or_series
-from .utils import check_file_size
+from .utils import check_file_size, normalize_period
 from .serializers import (
     TaskDetailSerializer,
     TaskCreateSerializer,
@@ -342,7 +342,7 @@ class DistrictManagerTaskView(APIView):
     def get(self, request):
         location_filter = request.query_params.get('location')
         status_filter   = request.query_params.get('status')
-        period_filter   = request.query_params.get('period')
+        period_filter   = normalize_period(request.query_params.get('period'), default=None)
         search          = request.query_params.get('search', '').strip()
 
         locations = get_active_locations()
@@ -718,7 +718,7 @@ class DistrictManagerReportsView(APIView):
 
     def get(self, request):
         manager = request.user
-        period  = request.query_params.get('period', 'weekly')
+        period  = normalize_period(request.query_params.get('period'), 'weekly')
         now     = timezone.now()
 
         # ── Period range ──────────────────────────────────────────
@@ -915,7 +915,7 @@ class DistrictManagerEmployeePerformanceView(APIView):
     permission_classes = [IsDistrictManager]
 
     def get(self, request):
-        period          = request.query_params.get('period', 'weekly')
+        period          = normalize_period(request.query_params.get('period'), 'weekly')
         location_filter = request.query_params.get('location')
         now             = timezone.now()
         today           = now.date()

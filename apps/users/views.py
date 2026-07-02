@@ -14,7 +14,7 @@ from rest_framework_simplejwt.exceptions import InvalidToken
 from rest_framework.decorators import action
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from apps.admin_api.models import Attendance, Instruction, QRSession, TaskAssignment, UserWorkSchedule, ActivityLog
-from apps.admin_api.utils import check_file_size
+from apps.admin_api.utils import check_file_size, normalize_period
 from .models import AppNotification
 
 from .serializers import (
@@ -634,7 +634,7 @@ class AppPerformanceView(APIView):
 
     def get(self, request):
         user   = request.user
-        period = request.query_params.get('period', 'weekly')
+        period = normalize_period(request.query_params.get('period'), 'weekly')
         today  = timezone.localdate()
 
         # ── Period range ──────────────────────────────────────────

@@ -223,6 +223,12 @@ EMAIL_HOST_PASSWORD = env("EMAIL_HOST_PASSWORD")
 DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL")
 
 # --------------------------------------------------
+# FIREBASE (push notifications)
+# --------------------------------------------------
+# Path to the Firebase service-account JSON (kept out of git; set in .env).
+# If empty/missing, push sending is silently skipped (in-app notifications still work).
+FIREBASE_CREDENTIALS_PATH = env("FIREBASE_CREDENTIALS_PATH", default="")
+
 # CLOUDINARY
 # --------------------------------------------------
 CLOUDINARY_STORAGE = {

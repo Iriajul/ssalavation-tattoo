@@ -15,7 +15,7 @@ from rest_framework.decorators import action
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from apps.admin_api.models import Attendance, Instruction, QRSession, TaskAssignment, UserWorkSchedule, ActivityLog
 from apps.admin_api.utils import check_file_size, normalize_period
-from .models import AppNotification
+from .models import AppNotification, DeviceToken
 
 from .serializers import (
     AppLoginSerializer,
@@ -1025,3 +1025,38 @@ class AppNotificationDeleteView(APIView):
                 {'error': 'Notification not found.'},
                 status=status.HTTP_404_NOT_FOUND
             )
+
+# ================================================================
+# DEVICE TOKEN — register/unregister for FCM push notifications
+# ================================================================
+
+class DeviceTokenView(APIView):
+    """
+    POST   /api/users/device-token/   { "token": "<fcm>", "platform": "android" }
+        → registers (or re-assigns) the device token to the current user.
+    DELETE /api/users/device-token/   { "token": "<fcm>" }   (or empty body)
+        → removes that token, or all of the user's tokens if none given.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        token    = (request.data.get('token') or '').strip()
+        platform = (request.data.get('platform') or 'android').strip().lower()
+        if not token:
+            return Response({"error": "token is required."}, status=status.HTTP_400_BAD_REQUEST)
+        if platform not in dict(DeviceToken.Platform.choices):
+            platform = 'android'
+
+        DeviceToken.objects.update_or_create(
+            token=token,
+            defaults={'user': request.user, 'platform': platform},
+        )
+        return Response({"message": "Device token registered."}, status=status.HTTP_200_OK)
+
+    def delete(self, request):
+        token = (request.data.get('token') or '').strip()
+        if token:
+            DeviceToken.objects.filter(user=request.user, token=token).delete()
+        else:
+            DeviceToken.objects.filter(user=request.user).delete()
+        return Response({"message": "Device token removed."}, status=status.HTTP_200_OK)

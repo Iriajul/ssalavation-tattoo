@@ -21,6 +21,7 @@ from .views import (
     AppTaskViewSet,
     AppTaskHistoryViewSet,
     AppInstructionViewSet,
+    DeviceTokenView,
 )
 
 router = DefaultRouter()
@@ -40,6 +41,8 @@ urlpatterns = [
     # ── Attendance ────────────────────────────────────────────────
     path('attendance/', AppAttendanceView.as_view(), name='app-attendance'),
     path('attendance/today/',      AppTodayAttendanceView.as_view(),   name='app-today-attendance'),
+    # ── Push notifications (FCM device token) ─────────────────────
+    path('device-token/', DeviceTokenView.as_view(), name='app-device-token'),
     # ── Tasks ─────────────────────────────────────────────────────
     path('', include(router.urls)),
 

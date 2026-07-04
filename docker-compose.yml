@@ -41,6 +41,8 @@ services:
     volumes:
       - static_volume:/app/staticfiles
       - media_volume:/app/media
+      # Firebase service-account JSON (gitignored on host; read-only in container)
+      - ./salvationapp-firebase-adminsdk.json:/app/secrets/firebase.json:ro
     ports:
       - "8001:8000"
     depends_on:

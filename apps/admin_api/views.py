@@ -2822,6 +2822,14 @@ class AdminNotificationViewSet(viewsets.ViewSet):
                 )
                 for emp in employee_recipients
             ])
+            # bulk_create bypasses the post_save push signal → push explicitly.
+            from apps.users.push import send_push_to_users
+            send_push_to_users(
+                employee_recipients,
+                f"Message from {sender_name}",
+                message,
+                data={'notif_type': 'system'},
+            )
 
         # create admin notification for all recipients (so sent view shows everyone)
         notification = AdminNotification.objects.create(

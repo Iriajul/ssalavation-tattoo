@@ -186,3 +186,27 @@ class AppNotification(models.Model):
 
     def __str__(self):
         return f"{self.notif_type} → {self.recipient.email}"
+
+
+class DeviceToken(models.Model):
+    """FCM device registration token for push notifications (one row per device)."""
+
+    class Platform(models.TextChoices):
+        ANDROID = 'android', 'Android'
+        IOS     = 'ios',     'iOS'
+        WEB     = 'web',     'Web'
+
+    user       = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='device_tokens'
+    )
+    token      = models.CharField(max_length=500, unique=True)
+    platform   = models.CharField(max_length=10, choices=Platform.choices, default=Platform.ANDROID)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'device_tokens'
+        indexes  = [models.Index(fields=['user'], name='devicetoken_user_idx')]
+
+    def __str__(self):
+        return f"{self.user_id} · {self.platform}"

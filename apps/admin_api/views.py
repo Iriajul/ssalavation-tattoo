@@ -738,8 +738,7 @@ class InstructionViewSet(viewsets.ModelViewSet):
         return role_visibility
 
     def list(self, request, *args, **kwargs):
-        queryset     = self.filter_queryset(self.get_queryset())
-        role_filter  = request.query_params.get('role')
+        queryset = self.filter_queryset(self.get_queryset())
 
         # NOTE: JSONField contains queries can use aggregate easily
         stats_data = Instruction.objects.aggregate(
@@ -755,12 +754,9 @@ class InstructionViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(queryset, many=True)
         all_data   = serializer.data
 
-        if role_filter and role_filter != 'all':
-            return Response({
-                'stats':        stats,
-                'instructions': all_data,
-            }, status=status.HTTP_200_OK)
-
+        # Always return the same `grouped` structure — whether "all" or a specific
+        # role filter is applied. get_queryset() already narrows by role, so the
+        # grouped sections simply show only the matching instructions.
         employee_instructions         = [i for i in all_data if any(r in i['role_visibility'] for r in ['tattoo_artist', 'body_piercer', 'staff'])]
         manager_instructions          = [i for i in all_data if 'branch_manager'   in i['role_visibility']]
         district_manager_instructions = [i for i in all_data if 'district_manager' in i['role_visibility']]

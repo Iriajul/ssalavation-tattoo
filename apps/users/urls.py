@@ -22,6 +22,7 @@ from .views import (
     AppTaskHistoryViewSet,
     AppInstructionViewSet,
     DeviceTokenView,
+    AppDeleteAccountView,
 )
 
 router = DefaultRouter()
@@ -43,6 +44,8 @@ urlpatterns = [
     path('attendance/today/',      AppTodayAttendanceView.as_view(),   name='app-today-attendance'),
     # ── Push notifications (FCM device token) ─────────────────────
     path('device-token/', DeviceTokenView.as_view(), name='app-device-token'),
+    # ── Account deletion (self-service, staff only) ───────────────
+    path('account/delete/', AppDeleteAccountView.as_view(), name='app-delete-account'),
     # ── Tasks ─────────────────────────────────────────────────────
     path('', include(router.urls)),
 

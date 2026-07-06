@@ -1060,3 +1060,70 @@ class DeviceTokenView(APIView):
         else:
             DeviceToken.objects.filter(user=request.user).delete()
         return Response({"message": "Device token removed."}, status=status.HTTP_200_OK)
+
+
+# ================================================================
+# APP — DELETE ACCOUNT (self-service, staff/app users only)
+# ================================================================
+
+class AppDeleteAccountView(APIView):
+    """
+    POST /api/users/account/delete/   { "password": "<current password>" }
+
+    Self-service account deletion for app users (staff / tattoo artist / body
+    piercer). Requires the current password to confirm. The account is
+    anonymized and deactivated — personal data is scrubbed and login is
+    disabled — while attendance and task history are preserved for the shop's
+    records. Device tokens are removed so push notifications stop immediately.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user     = request.user
+        password = request.data.get('password') or ''
+
+        # ── Only app users may self-delete (admins are managed elsewhere) ──
+        if not user.is_app_user:
+            return Response(
+                {"error": "Only staff app accounts can be deleted from the app."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # ── Confirm identity with password ────────────────────────────────
+        if not password:
+            return Response(
+                {"error": "Password is required to delete your account."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not user.check_password(password):
+            return Response(
+                {"error": "Incorrect password."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ── Anonymize + deactivate (history preserved) ────────────────────
+        from django.db import transaction
+
+        with transaction.atomic():
+            # Remove push registrations so notifications stop right away.
+            DeviceToken.objects.filter(user=user).delete()
+
+            user.is_active     = False
+            user.is_suspended  = True
+            user.email         = f"deleted_{user.id}@deleted.local"
+            user.username      = f"deleted_{user.id}"
+            user.first_name    = ""
+            user.last_name     = ""
+            user.phone         = None
+            user.profile_photo = None
+            user.location      = None
+            user.set_unusable_password()
+            user.clear_login_otp()   # also saves
+            user.reset_otp        = None
+            user.reset_otp_expiry = None
+            user.save()
+
+        return Response(
+            {"message": "Your account has been deleted."},
+            status=status.HTTP_200_OK,
+        )

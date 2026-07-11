@@ -82,14 +82,21 @@ class AppLoginView(APIView):
         serializer.is_valid(raise_exception=True)
 
         user = serializer.validated_data['user']
-        otp  = user.set_login_otp()
 
-        send_otp_email(user.email, otp, subject="Salvation Tattoo — Login Code")
+        # Single-step login: credentials are fully validated in the serializer
+        # (active / suspended / role), so issue the JWT tokens directly. No email
+        # OTP — Apple rejects mandatory email OTP on every login.
+        refresh = RefreshToken.for_user(user)
+        refresh['role']  = user.role
+        refresh['email'] = user.email
 
         return Response({
-            "message":    "A verification code has been sent to your email.",
-            "email":      user.email,
-            "temp_token": get_temp_token(user, minutes=10),
+            "message": "Login successful.",
+            "user":    AppUserSerializer(user).data,
+            "tokens": {
+                "access":  str(refresh.access_token),
+                "refresh": str(refresh),
+            },
         }, status=status.HTTP_200_OK)
 
 

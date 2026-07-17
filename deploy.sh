@@ -88,27 +88,29 @@ step "git pull"
 git pull origin "$BRANCH"
 ok "Code updated"
 
-# Detect if a Docker rebuild is needed
-REBUILD=false
+# The Dockerfile bakes the source in with 'COPY . /app/' and there is no code
+# volume, so a restart would keep serving the OLD image. Always rebuild.
+# --force-recreate also makes the container re-read .env.production, which a
+# plain restart never does.
+DEEP_REBUILD=false
 if git diff HEAD@{1} HEAD --name-only 2>/dev/null | grep -qE '^(Dockerfile|requirements\.txt|docker-compose\.yml)$'; then
-    REBUILD=true
+    DEEP_REBUILD=true
 fi
 
 step "Docker"
-if [[ "\$REBUILD" == true ]]; then
-    echo "  Dockerfile or requirements changed — full rebuild..."
+if [[ "\$DEEP_REBUILD" == true ]]; then
+    echo "  Dockerfile/requirements/compose changed — full rebuild from scratch..."
     docker compose down --remove-orphans
     docker system prune -f
     docker compose up -d --build
-    ok "Rebuilt and started"
 else
-    echo "  Python-only change — restarting backend only (db keeps running)..."
-    docker compose up -d 2>/dev/null || true
-    docker compose restart backend
-    echo "  Waiting for backend to be ready..."
-    until docker compose exec -T backend echo "ready" 2>/dev/null; do sleep 1; done
-    ok "Backend restarted"
+    echo "  Rebuilding backend image (layer cache makes this fast)..."
+    docker compose up -d --build --force-recreate backend
 fi
+
+echo "  Waiting for backend to be ready..."
+until docker compose exec -T backend echo "ready" >/dev/null 2>&1; do sleep 1; done
+ok "Backend rebuilt and started"
 
 step "Migrations"
 docker compose exec -T backend python manage.py migrate --noinput
@@ -116,6 +118,11 @@ ok "Migrations applied"
 
 step "Static files"
 docker compose exec -T backend python manage.py collectstatic --noinput --clear 2>/dev/null || true
+
+# Fail loudly rather than reporting success over a crash-looping container.
+step "Health check"
+docker compose exec -T backend python manage.py check --deploy --fail-level ERROR >/dev/null
+ok "Django check passed"
 
 echo ""
 echo -e "\${BOLD}\${GREEN}Deployment complete!\${NC}"

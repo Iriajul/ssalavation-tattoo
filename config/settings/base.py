@@ -217,10 +217,14 @@ FILE_UPLOAD_MAX_MEMORY_SIZE = 31457280  # 30MB
 EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
 EMAIL_HOST = env("EMAIL_HOST")
 EMAIL_PORT = env.int("EMAIL_PORT", default=587)
-EMAIL_USE_TLS = env.bool("EMAIL_USE_TLS", default=True)
+# Port 465 needs SSL, port 587 needs TLS. Django rejects both being on, so SSL
+# wins when enabled — otherwise a stale EMAIL_USE_TLS in .env would clash.
+EMAIL_USE_SSL = env.bool("EMAIL_USE_SSL", default=False)
+EMAIL_USE_TLS = False if EMAIL_USE_SSL else env.bool("EMAIL_USE_TLS", default=True)
 EMAIL_HOST_USER = env("EMAIL_HOST_USER")
 EMAIL_HOST_PASSWORD = env("EMAIL_HOST_PASSWORD")
 DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL")
+EMAIL_TIMEOUT = env.int("EMAIL_TIMEOUT", default=20)
 
 # --------------------------------------------------
 # FIREBASE (push notifications)

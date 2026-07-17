@@ -1,0 +1,66 @@
+{% comment %}
+Base email layout. Table-based with inline CSS — email clients (Outlook, Gmail)
+strip <style> blocks and ignore flex/grid, so this stays deliberately old-school.
+Child templates fill the `content` block.
+{% endcomment %}<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="x-apple-disable-message-reformatting">
+  <title>{% block title %}Salvation Tattoo Lounge{% endblock %}</title>
+</head>
+<body style="margin:0; padding:0; background-color:#f4f4f5; -webkit-font-smoothing:antialiased;">
+
+  {# Preheader: inbox preview text, hidden in the body itself #}
+  <div style="display:none; font-size:1px; color:#f4f4f5; line-height:1px; max-height:0; max-width:0; opacity:0; overflow:hidden;">
+    {% block preheader %}{% endblock %}
+  </div>
+
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%"
+         style="background-color:#f4f4f5;">
+    <tr>
+      <td align="center" style="padding:32px 12px;">
+
+        <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%"
+               style="max-width:560px; background-color:#ffffff; border-radius:12px; overflow:hidden; border:1px solid #e4e4e7;">
+
+          <!-- Header -->
+          <tr>
+            <td align="center" style="background-color:#18181b; padding:28px 24px;">
+              <div style="font-family:Georgia,'Times New Roman',serif; font-size:11px; letter-spacing:2px; color:#a1a1aa; text-transform:uppercase;">
+                Est. 2005
+              </div>
+              <div style="font-family:Georgia,'Times New Roman',serif; font-size:26px; letter-spacing:4px; color:#ffffff; text-transform:uppercase; padding-top:4px;">
+                Salvation
+              </div>
+              <div style="font-family:Arial,Helvetica,sans-serif; font-size:9px; letter-spacing:3px; color:#a1a1aa; text-transform:uppercase; padding-top:4px;">
+                Tattoo Lounge
+              </div>
+            </td>
+          </tr>
+
+          <!-- Body -->
+          <tr>
+            <td style="padding:36px 32px; font-family:Arial,Helvetica,sans-serif; color:#3f3f46; font-size:15px; line-height:1.6;">
+              {% block content %}{% endblock %}
+            </td>
+          </tr>
+
+          <!-- Footer -->
+          <tr>
+            <td style="background-color:#fafafa; border-top:1px solid #e4e4e7; padding:20px 32px;
+                       font-family:Arial,Helvetica,sans-serif; font-size:12px; line-height:1.5; color:#a1a1aa;">
+              <p style="margin:0 0 4px 0;">Salvation Tattoo Lounge</p>
+              <p style="margin:0;">This is an automated message — please do not reply to this email.</p>
+            </td>
+          </tr>
+
+        </table>
+
+      </td>
+    </tr>
+  </table>
+
+</body>
+</html>

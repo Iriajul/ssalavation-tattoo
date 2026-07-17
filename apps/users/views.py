@@ -4,7 +4,6 @@ from rest_framework import filters, status, viewsets
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
-from django.core.mail import send_mail
 from django.conf import settings
 from datetime import timedelta
 from django.utils import timezone
@@ -15,6 +14,7 @@ from rest_framework.decorators import action
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from apps.admin_api.models import Attendance, Instruction, QRSession, TaskAssignment, UserWorkSchedule, ActivityLog
 from apps.admin_api.utils import check_file_size, normalize_period
+from .emails import send_otp_email
 from .models import AppNotification, DeviceToken
 
 from .serializers import (
@@ -54,17 +54,25 @@ def get_user_from_temp_token(temp_token):
     return User.objects.get(id=user_id)
 
 
-def send_otp_email(email, otp, subject="Salvation Tattoo — Login Code"):
-    try:
-        send_mail(
-            subject=subject,
-            message=f"Your 5-digit code is: {otp}\n\nThis code will expire in 10 minutes.\n\nIf you didn't request this, please ignore.",
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[email],
-            fail_silently=False,
-        )
-    except Exception as e:
-        print(f"Email sending failed: {e}")
+def send_login_otp_email(user, otp, resent=False):
+    return send_otp_email(
+        user.email, otp,
+        subject   = "Salvation Tattoo — Login Code" + (" (Resent)" if resent else ""),
+        heading   = "Your login code",
+        intro     = "Use the code below to finish signing in to the Salvation Tattoo app.",
+        full_name = user.get_full_name(),
+    )
+
+
+def send_reset_otp_email(user, otp):
+    return send_otp_email(
+        user.email, otp,
+        subject    = "Salvation Tattoo — Password Reset Code",
+        heading    = "Reset your password",
+        intro      = "We received a request to reset your password. Use the code below to continue.",
+        full_name  = user.get_full_name(),
+        code_label = "Reset code",
+    )
 
 def today_start(now):
     """Returns date 7 days ago for recent attendance fetch"""
@@ -167,7 +175,7 @@ class ResendLoginOTPView(APIView):
             )
 
         otp = user.set_login_otp()
-        send_otp_email(user.email, otp, subject="Salvation Tattoo — Login Code (Resent)")
+        send_login_otp_email(user, otp, resent=True)
 
         # Issue a fresh temp token with new 10min expiry
         return Response({
@@ -192,10 +200,7 @@ class AppForgotPasswordView(APIView):
         user  = User.objects.get(email=email)
         otp   = user.set_reset_otp()
 
-        send_otp_email(
-            user.email, otp,
-            subject="Salvation Tattoo — Password Reset Code"
-        )
+        send_reset_otp_email(user, otp)
 
         return Response({
             "message":    "A reset code has been sent to your email.",

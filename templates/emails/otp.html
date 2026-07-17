@@ -1,0 +1,35 @@
+{% extends "emails/base.html" %}
+
+{% block title %}{{ heading }}{% endblock %}
+{% block preheader %}Your code is {{ otp }} — expires in {{ expiry_minutes }} minutes.{% endblock %}
+
+{% block content %}
+  <h1 style="margin:0 0 16px 0; font-size:20px; font-weight:bold; color:#18181b;">{{ heading }}</h1>
+
+  <p style="margin:0 0 24px 0;">
+    {% if full_name %}Hi {{ full_name }},{% else %}Hi,{% endif %}
+    {{ intro }}
+  </p>
+
+  <!-- Code -->
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+    <tr>
+      <td align="center" style="background-color:#fafafa; border:1px solid #e4e4e7; border-radius:10px; padding:24px 16px;">
+        <div style="font-family:Arial,Helvetica,sans-serif; font-size:11px; letter-spacing:1px; color:#71717a; text-transform:uppercase;">
+          {{ code_label|default:"Verification code" }}
+        </div>
+        <div style="font-family:'Courier New',Courier,monospace; font-size:34px; font-weight:bold; letter-spacing:9px; color:#18181b; padding-top:10px;">
+          {{ otp }}
+        </div>
+      </td>
+    </tr>
+  </table>
+
+  <p style="margin:24px 0 0 0; color:#71717a; font-size:14px;">
+    This code expires in <strong style="color:#3f3f46;">{{ expiry_minutes }} minutes</strong>.
+  </p>
+
+  <p style="margin:16px 0 0 0; color:#71717a; font-size:14px;">
+    If you didn’t request this, you can safely ignore this email — your account stays secure.
+  </p>
+{% endblock %}

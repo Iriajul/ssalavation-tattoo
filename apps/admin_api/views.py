@@ -7,7 +7,7 @@ from rest_framework.decorators import action
 from rest_framework.filters import SearchFilter
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.pagination import PageNumberPagination
-from django.core.mail import send_mail
+from apps.users.emails import send_html_email, send_otp_email
 from django.conf import settings
 from django.utils import timezone
 from django.utils.timesince import timesince
@@ -117,16 +117,14 @@ class ForgotPasswordView(APIView):
         user  = User.objects.get(email=email)
         otp   = user.set_reset_otp()
 
-        try:
-            send_mail(
-                subject        = "Salvation Tattoo Admin Password Reset Code",
-                message        = f"Your 5-digit reset code is: {otp}\n\nThis code will expire in 10 minutes.",
-                from_email     = settings.DEFAULT_FROM_EMAIL,
-                recipient_list = [email],
-                fail_silently  = False,
-            )
-        except Exception as e:
-            print(f"Email sending failed: {e}")
+        send_otp_email(
+            email, otp,
+            subject    = "Salvation Tattoo — Admin Password Reset Code",
+            heading    = "Reset your password",
+            intro      = "We received a request to reset your admin dashboard password. Use the code below to continue.",
+            full_name  = user.get_full_name(),
+            code_label = "Reset code",
+        )
 
         refresh = RefreshToken.for_user(user)
         refresh.access_token.set_exp(lifetime=timedelta(minutes=15))
@@ -646,22 +644,12 @@ class TaskViewSet(viewsets.ModelViewSet):
         user.is_suspended = True
         user.save(update_fields=['is_active', 'is_suspended'])
 
-        try:
-            send_mail(
-                subject='Employment Termination — Salvation Tattoo Lounge',
-                message=(
-                    f"Dear {user.get_full_name()},\n\n"
-                    f"We regret to inform you that your employment at Salvation Tattoo Lounge "
-                    f"has been terminated.\n\nReason: {fire_reason}\n\n"
-                    f"Please contact management if you have any questions.\n\n"
-                    f"Salvation Tattoo Lounge Management"
-                ),
-                from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[user.email],
-                fail_silently=False,
-            )
-        except Exception as e:
-            print(f"Fire email failed: {e}")
+        send_html_email(
+            subject  = "Employment Termination — Salvation Tattoo Lounge",
+            template = "emails/termination.html",
+            context  = {'full_name': user.get_full_name(), 'reason': fire_reason},
+            to       = user.email,
+        )
 
         ActivityLog.objects.create(action='user_suspended', actor=request.user, target_user=user, message=f'{user.get_full_name()} was fired. Reason: {fire_reason}')
 

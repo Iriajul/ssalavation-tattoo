@@ -1253,7 +1253,7 @@ class DistrictManagerUserAttendanceListView(APIView):
 # DISTRICT MANAGER — EMPLOYEE ATTENDANCE DETAIL (drill-down)
 # ================================================================
 class DistrictManagerEmployeeAttendanceDetailView(APIView):
-    permission_classes = [IsDistrictManager]
+    permission_classes = [IsSuperAdminOrDistrictManager]
 
     WEEKDAY_MAP = {
         0: 'mon',

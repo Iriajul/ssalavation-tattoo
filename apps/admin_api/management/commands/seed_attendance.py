@@ -7,8 +7,10 @@ with no record for that employee are filled in. Use --dry-run to preview first.
 
     python manage.py seed_attendance --days 14 --dry-run
     python manage.py seed_attendance --days 14
+    python manage.py seed_attendance --month 2026-04            # whole month
     python manage.py seed_attendance --days 14 --location 3
-    python manage.py seed_attendance --undo --days 14     # remove seeded rows
+    python manage.py seed_attendance --undo --days 14           # remove seeded rows
+    python manage.py seed_attendance --undo --month 2026-04     # remove a month's seed
 """
 import random
 from datetime import date, time, timedelta
@@ -45,7 +47,11 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument('--days', type=int, default=14,
-                            help='How many days back to fill, including today (default 14).')
+                            help='How many days back to fill, including today (default 14). '
+                                 'Ignored when --month is given.')
+        parser.add_argument('--month', type=str, default=None,
+                            help='Fill a whole calendar month, e.g. 2026-04. Overrides --days. '
+                                 'Future dates within the month are skipped.')
         parser.add_argument('--location', type=int, default=None,
                             help='Only seed employees at this location id.')
         parser.add_argument('--dry-run', action='store_true',
@@ -65,8 +71,27 @@ class Command(BaseCommand):
         if opts['seed'] is not None:
             random.seed(opts['seed'])
 
-        today      = timezone.localdate()
-        start_date = today - timedelta(days=days - 1)
+        today = timezone.localdate()
+
+        # --month wins over --days: fill that calendar month (never the future).
+        if opts['month']:
+            try:
+                y, m = opts['month'].split('-')
+                month_start = date(int(y), int(m), 1)
+            except (ValueError, TypeError):
+                self.stderr.write(self.style.ERROR('--month must be YYYY-MM, e.g. 2026-04'))
+                return
+            next_month = (month_start.replace(day=28) + timedelta(days=4)).replace(day=1)
+            month_end  = next_month - timedelta(days=1)
+            start_date = month_start
+            end_date   = min(month_end, today)          # don't seed the future
+            if start_date > today:
+                self.stdout.write(self.style.WARNING(f'{opts["month"]} is entirely in the future. Nothing to do.'))
+                return
+            days = (end_date - start_date).days + 1
+        else:
+            end_date   = today
+            start_date = today - timedelta(days=days - 1)
 
         employees = User.objects.filter(
             role__in=EMPLOYEE_ROLES, is_active=True, location__isnull=False
@@ -81,7 +106,7 @@ class Command(BaseCommand):
         # ── UNDO ──────────────────────────────────────────────────────────────
         if undo:
             seeded = Attendance.objects.filter(
-                user__in=employees, date__gte=start_date, date__lte=today, qr_session__isnull=True
+                user__in=employees, date__gte=start_date, date__lte=end_date, qr_session__isnull=True
             )
             count = seeded.count()
             if dry_run:
@@ -94,7 +119,7 @@ class Command(BaseCommand):
         # ── Existing rows: never touch them ───────────────────────────────────
         existing = set(
             Attendance.objects.filter(
-                user__in=employees, date__gte=start_date, date__lte=today
+                user__in=employees, date__gte=start_date, date__lte=end_date
             ).values_list('user_id', 'date')
         )
 
@@ -166,7 +191,7 @@ class Command(BaseCommand):
 
         self.stdout.write(
             f'Employees: {employees.count()} | '
-            f'Range: {start_date} → {today} ({days} days)\n'
+            f'Range: {start_date} → {end_date} ({days} days)\n'
             f'To create: {len(to_create)}  '
             f'(present={counts["present"]}, late={counts["late"]}, absent={counts["absent"]})\n'
             f'Skipped (already had a record): {skipped}'

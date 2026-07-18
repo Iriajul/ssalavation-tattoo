@@ -9,7 +9,7 @@ from django.utils import timezone
 from datetime import datetime, time, timedelta, date
 from .models import Location, Task, TaskAssignment, Attendance, UserWorkSchedule, ActivityLog
 from apps.users.models import AppNotification
-from .permissions import IsDistrictManager
+from .permissions import IsDistrictManager, IsSuperAdminOrDistrictManager
 from .task_helpers import collapsed_task_page, update_task_or_template, delete_task_or_series
 from .utils import check_file_size, normalize_period
 from .serializers import (
@@ -889,7 +889,7 @@ class DistrictManagerLocationsView(APIView):
     District manager sees all active locations with staff count
     Read only — no create/edit/delete
     """
-    permission_classes = [IsDistrictManager]
+    permission_classes = [IsSuperAdminOrDistrictManager]
 
     def get(self, request):
         # Single query with annotation — no N+1
@@ -1160,7 +1160,7 @@ class DistrictManagerPerformanceDashboardView(APIView):
 # ================================================================
 
 class DistrictManagerUserAttendanceListView(APIView):
-    permission_classes = [IsDistrictManager]
+    permission_classes = [IsSuperAdminOrDistrictManager]
 
     def get(self, request):
         search          = request.query_params.get('search', '').strip()

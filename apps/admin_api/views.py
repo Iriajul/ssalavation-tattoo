@@ -2429,7 +2429,17 @@ class BranchManagerTaskViewSet(viewsets.ModelViewSet):
 
     def list(self, request, *args, **kwargs):
         manager  = request.user
-        queryset = self.get_queryset().filter(assignments__status='pending').distinct()
+        queryset = self.get_queryset()
+
+        # Only narrow by status when the client explicitly asks. Previously this
+        # always forced assignments__status='pending', so a task dropped off the
+        # list the moment the employee submitted it (status -> awaiting_review),
+        # and the join inflated status_counts. status_counts already reports the
+        # real per-status numbers, so the list stays unfiltered by default.
+        status_filter = request.query_params.get('status')
+        if status_filter:
+            queryset = queryset.filter(assignments__status=status_filter).distinct()
+
         # Collapse recurring series → one row each (one-time tasks unchanged).
         tasks_data = collapsed_task_page(
             queryset, request, BranchManagerTaskListSerializer,

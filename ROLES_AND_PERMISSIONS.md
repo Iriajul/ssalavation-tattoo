@@ -625,6 +625,53 @@ Submissions awaiting review (own location). Approve/reject via `manager/tasks/{i
   ] }
 ```
 
+## Attendance
+Same screens as the district/super-admin Users Attendance, but scoped to the
+manager's **own location only** — no `location` param (it's fixed server-side).
+
+### GET `manager/users-attendance/`
+Yearly attendance totals for the manager's own-location employees.
+**Query params:** `search`, `year` (default current), `page`.
+**200**
+```json
+{
+  "year": 2026,
+  "employees": [
+    { "id": 32, "name": "Ramona Smith", "role": "Staff",
+      "location_name": "Pembroke Pines", "location_id": 1,
+      "present": 4, "late": 1, "absent": 0 }
+  ],
+  "employees_meta": { "count": 3, "next": null, "previous": null }
+}
+```
+
+### GET `manager/attendance/{employee_id}/`
+Per-employee attendance detail. Returns **404** if the employee isn't at the manager's location.
+**Query params:** `month` = `YYYY-MM` (day grid) **or** `year` = `YYYY` (12-month summary).
+
+`?month=2026-04` →
+```json
+{
+  "employee": { "id": 32, "name": "Ramona Smith", "role": "Staff", "location": "Pembroke Pines" },
+  "mode": "daily", "month": "2026-04", "month_label": "April 2026",
+  "summary": { "present": 12, "late": 2, "absent": 1 },
+  "records": [
+    { "date": "2026-04-01", "day": 1, "weekday": "Wed", "is_work_day": true,
+      "status": "present", "clock_in": "10:03:00", "clock_out": "18:00:00" }
+  ]
+}
+```
+
+`?year=2026` →
+```json
+{
+  "employee": { "id": 32, "name": "Ramona Smith", "role": "Staff", "location": "Pembroke Pines" },
+  "mode": "monthly", "year": 2026,
+  "summary": { "present": 120, "late": 10, "absent": 5 },
+  "records": [ { "month": 1, "month_label": "Jan", "month_key": "2026-01", "present": 15, "late": 1, "absent": 0 } ]
+}
+```
+
 ## QR
 Same endpoints as [Super Admin → QR](#qr) (`qr/`, `qr/{id}/details/`) — scoped to the manager's location.
 
@@ -689,7 +736,7 @@ Show the current attendance QR code for scanning.
 | Manage instructions | ✅ | ✅ | ❌ |
 | Manage FAQs / app content | ✅ | ❌ | ❌ |
 | Generate QR codes | ✅ | ✅ | ✅ (own loc) |
-| View attendance (all locations) | ✅ | ✅ | ❌ (own loc only) |
+| View attendance | ✅ (all) | ✅ (all) | ✅ (own loc only) |
 | Global dashboard / reports | ✅ | ✅ (district) | ✅ (own loc) |
 | Send notifications | ✅ (anyone) | ✅ (anyone) | ✅ (own-loc employees) |
 

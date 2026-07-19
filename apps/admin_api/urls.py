@@ -1,7 +1,7 @@
 # apps/admin_api/urls.py
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from .district_views import DistrictManagerDashboardView, DistrictManagerLocationsView, DistrictManagerReportsView, DistrictManagerTaskView, DistrictManagerTaskDetailView, DistrictManagerLocationEmployeesView, DistrictManagerEmployeesView, DistrictManagerUserAttendanceListView, DistrictManagerVerificationActionView, DistrictManagerVerificationView,DistrictManagerProfileView, DistrictManagerChangePasswordView,DistrictManagerEmployeePerformanceView,DistrictManagerEmployeeAttendanceDetailView, DistrictManagerPerformanceDashboardView
+from .district_views import DistrictManagerDashboardView, DistrictManagerLocationsView, DistrictManagerReportsView, DistrictManagerTaskView, DistrictManagerTaskDetailView, DistrictManagerLocationEmployeesView, DistrictManagerEmployeesView, DistrictManagerUserAttendanceListView, DistrictManagerVerificationActionView, DistrictManagerVerificationView,DistrictManagerProfileView, DistrictManagerChangePasswordView,DistrictManagerEmployeePerformanceView,DistrictManagerEmployeeAttendanceDetailView, DistrictManagerPerformanceDashboardView, BranchManagerUserAttendanceListView, BranchManagerEmployeeAttendanceDetailView
 from .views import (
     AdminChangePasswordView,
     AdminLoginView,
@@ -78,6 +78,9 @@ urlpatterns = [
     # path('manager/qr/intervals/', QRIntervalListView.as_view(), name='qr-intervals'),
     path('manager/employees/', BranchManagerLocationEmployeesView.as_view(), name='manager-employees'),
     path('manager/verifications/', BranchManagerVerificationView.as_view(), name='manager-verifications'),
+    # ── Branch manager users attendance (own location only) ───────
+    path('manager/users-attendance/', BranchManagerUserAttendanceListView.as_view(), name='manager-users-attendance'),
+    path('manager/attendance/<int:employee_id>/', BranchManagerEmployeeAttendanceDetailView.as_view(), name='manager-employee-attendance'),
     path('users-attendance/', UserAttendanceView.as_view(), name='users-attendance'),
     # ── Employees by location ─────────────────────────────────────
     path('locations/<int:pk>/employees/', LocationEmployeesView.as_view(), name='location-employees'),

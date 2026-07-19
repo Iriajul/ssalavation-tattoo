@@ -9,7 +9,7 @@ from django.utils import timezone
 from datetime import datetime, time, timedelta, date
 from .models import Location, Task, TaskAssignment, Attendance, UserWorkSchedule, ActivityLog
 from apps.users.models import AppNotification
-from .permissions import IsDistrictManager, IsSuperAdminOrDistrictManager
+from .permissions import IsDistrictManager, IsSuperAdminOrDistrictManager, IsBranchManager
 from .task_helpers import collapsed_task_page, update_task_or_template, delete_task_or_series
 from .utils import check_file_size, normalize_period
 from .serializers import (
@@ -1162,6 +1162,10 @@ class DistrictManagerPerformanceDashboardView(APIView):
 class DistrictManagerUserAttendanceListView(APIView):
     permission_classes = [IsSuperAdminOrDistrictManager]
 
+    def get_scope_location_ids(self, request):
+        """Locations this viewer may see. District/super admin → all active."""
+        return list(get_active_locations().values_list('id', flat=True))
+
     def get(self, request):
         search          = request.query_params.get('search', '').strip()
         location_filter = request.query_params.get('location')
@@ -1176,8 +1180,7 @@ class DistrictManagerUserAttendanceListView(APIView):
         end_date   = date(year, 12, 31)
 
         # ── Validate locations ────────────────────────────────────
-        all_locations = get_active_locations()
-        location_ids  = list(all_locations.values_list('id', flat=True))
+        location_ids = self.get_scope_location_ids(request)
 
         if location_filter:
             try:
@@ -1265,6 +1268,10 @@ class DistrictManagerEmployeeAttendanceDetailView(APIView):
         6: 'sun',
     }
 
+    def get_scope_location_ids(self, request):
+        """Locations this viewer may see. District/super admin → all active."""
+        return list(get_active_locations().values_list('id', flat=True))
+
     def get(self, request, employee_id):
         year_param  = request.query_params.get('year', str(timezone.now().year))
         month_param = request.query_params.get('month')  # e.g. "2025-01"
@@ -1275,8 +1282,7 @@ class DistrictManagerEmployeeAttendanceDetailView(APIView):
             return Response({'error': 'Invalid year.'}, status=status.HTTP_400_BAD_REQUEST)
 
         # ── Validate employee ─────────────────────────────────────
-        all_locations = get_active_locations()
-        location_ids  = list(all_locations.values_list('id', flat=True))
+        location_ids = self.get_scope_location_ids(request)
 
         try:
             emp = User.objects.select_related('location').get(
@@ -1412,3 +1418,24 @@ class DistrictManagerEmployeeAttendanceDetailView(APIView):
             },
             'records': monthly_records,
         }, status=status.HTTP_200_OK)
+
+# ================================================================
+# BRANCH MANAGER — USERS ATTENDANCE (own location only)
+# ================================================================
+# Same screens as the district-manager attendance views (yearly list +
+# per-employee month/year detail), but scoped to the manager's own location.
+# They reuse all the district logic and only override the location scope.
+
+class BranchManagerUserAttendanceListView(DistrictManagerUserAttendanceListView):
+    permission_classes = [IsBranchManager]
+
+    def get_scope_location_ids(self, request):
+        # Only the manager's own location (empty list if unassigned → no rows).
+        return [request.user.location_id] if request.user.location_id else []
+
+
+class BranchManagerEmployeeAttendanceDetailView(DistrictManagerEmployeeAttendanceDetailView):
+    permission_classes = [IsBranchManager]
+
+    def get_scope_location_ids(self, request):
+        return [request.user.location_id] if request.user.location_id else []

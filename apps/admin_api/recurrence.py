@@ -238,11 +238,12 @@ def series_meta(template_ids, today=None):
       { template_id: { 'total_occurrences': int, 'status_counts': {...} } }
 
     - total_occurrences: every occurrence in the series (full schedule).
-    - status_counts: occurrences already due (due_date <= today) PLUS each
-      template's single next upcoming occurrence. This keeps the counts from
-      flooding with the whole future series (e.g. "26 pending"), while still
-      surfacing a brand-new recurring task whose first occurrence is in the
-      future — it shows pending: 1 instead of 0.
+    - status_counts: occurrences already due (due_date <= today). For a series
+      that has NOTHING due yet (a brand-new task whose first occurrence is still
+      in the future), the single next upcoming occurrence is counted instead —
+      so it shows pending: 1 rather than 0. A series that already has a due-today
+      occurrence is NOT padded with tomorrow's, so a daily-from-today task shows
+      today's count only (e.g. pending: 1, not 2).
 
     Three queries total, regardless of how many templates.
     """
@@ -260,17 +261,27 @@ def series_meta(template_ids, today=None):
     ):
         meta.setdefault(row['template_id'], {})['total_occurrences'] = row['n']
 
-    # The single next upcoming occurrence id per template (Postgres DISTINCT ON).
+    # Templates that have at least one occurrence already due.
+    templates_with_due = set(
+        Task.objects
+        .filter(template_id__in=template_ids, due_date__lte=today)
+        .values_list('template_id', flat=True).distinct()
+    )
+
+    # Only for templates with NOTHING due yet, count their single next upcoming
+    # occurrence — so a wholly-future series shows 1 instead of 0, but a series
+    # with a due-today occurrence isn't inflated by tomorrow's.
+    future_only_templates = [t for t in template_ids if t not in templates_with_due]
     next_upcoming_ids = list(
         Task.objects
-        .filter(template_id__in=template_ids, due_date__gt=today)
+        .filter(template_id__in=future_only_templates, due_date__gt=today)
         .order_by('template_id', 'due_date')
         .distinct('template_id')
         .values_list('id', flat=True)
-    )
+    ) if future_only_templates else []
 
     # Count assignments that are either already due, or belong to that one next
-    # upcoming occurrence.
+    # upcoming occurrence (future-only series).
     for row in (
         TaskAssignment.objects
         .filter(task__template_id__in=template_ids)

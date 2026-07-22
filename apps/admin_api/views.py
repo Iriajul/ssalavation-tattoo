@@ -490,10 +490,10 @@ class TaskViewSet(viewsets.ModelViewSet):
     def list(self, request, *args, **kwargs):
         queryset   = self.get_queryset()
         stats_data = TaskAssignment.objects.aggregate(
-            all_tasks = Count('id'),
-            overdue   = Count(Case(When(status='overdue',  then=1), output_field=IntegerField())),
-            completed = Count(Case(When(status='approved', then=1), output_field=IntegerField())),
-            rejected  = Count(Case(When(status='rejected', then=1), output_field=IntegerField())),
+            awaiting_review = Count(Case(When(status='awaiting_review', then=1), output_field=IntegerField())),
+            overdue         = Count(Case(When(status='overdue',  then=1), output_field=IntegerField())),
+            completed       = Count(Case(When(status='approved', then=1), output_field=IntegerField())),
+            rejected        = Count(Case(When(status='rejected', then=1), output_field=IntegerField())),
         )
         # Collapse recurring series → one row each (one-time tasks unchanged).
         tasks_data = collapsed_task_page(queryset, request, TaskListSerializer)
@@ -564,8 +564,8 @@ class TaskViewSet(viewsets.ModelViewSet):
         except TaskAssignment.DoesNotExist:
             return Response({"error": "Assignment not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        if assignment.status not in ['awaiting_review', 'rejected']:
-            return Response({"error": "Only awaiting review or rejected assignments can be approved."}, status=status.HTTP_400_BAD_REQUEST)
+        if assignment.status != 'awaiting_review':
+            return Response({"error": "This task has already been reviewed and cannot be changed."}, status=status.HTTP_400_BAD_REQUEST)
 
         assignment.status      = 'approved'
         assignment.approved_by = request.user
@@ -590,8 +590,8 @@ class TaskViewSet(viewsets.ModelViewSet):
         except TaskAssignment.DoesNotExist:
             return Response({"error": "Assignment not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        if assignment.status not in ['awaiting_review', 'approved']:
-            return Response({"error": "Only awaiting review or approved assignments can be rejected."}, status=status.HTTP_400_BAD_REQUEST)
+        if assignment.status != 'awaiting_review':
+            return Response({"error": "This task has already been reviewed and cannot be changed."}, status=status.HTTP_400_BAD_REQUEST)
 
         assignment.status           = 'rejected'
         assignment.rejected_by      = request.user
@@ -2509,8 +2509,8 @@ class BranchManagerTaskViewSet(viewsets.ModelViewSet):
             assignment = task.assignments.select_related('employee').get(pk=s.validated_data['assignment_id'])
         except TaskAssignment.DoesNotExist:
             return Response({"error": "Assignment not found."}, status=status.HTTP_404_NOT_FOUND)
-        if assignment.status not in ['awaiting_review', 'rejected']:
-            return Response({"error": "Only awaiting review or rejected assignments can be approved."}, status=status.HTTP_400_BAD_REQUEST)
+        if assignment.status != 'awaiting_review':
+            return Response({"error": "This task has already been reviewed and cannot be changed."}, status=status.HTTP_400_BAD_REQUEST)
         assignment.status = 'approved'; assignment.approved_by = request.user; assignment.approved_at = timezone.now(); assignment.rejection_reason = None
         assignment.save(update_fields=['status', 'approved_by', 'approved_at', 'rejection_reason'])
         emp = assignment.employee
@@ -2527,8 +2527,8 @@ class BranchManagerTaskViewSet(viewsets.ModelViewSet):
             assignment = task.assignments.select_related('employee').get(pk=s.validated_data['assignment_id'])
         except TaskAssignment.DoesNotExist:
             return Response({"error": "Assignment not found."}, status=status.HTTP_404_NOT_FOUND)
-        if assignment.status not in ['awaiting_review', 'approved']:
-            return Response({"error": "Only awaiting review or approved assignments can be rejected."}, status=status.HTTP_400_BAD_REQUEST)
+        if assignment.status != 'awaiting_review':
+            return Response({"error": "This task has already been reviewed and cannot be changed."}, status=status.HTTP_400_BAD_REQUEST)
         assignment.status = 'rejected'; assignment.rejected_by = request.user; assignment.rejected_at = timezone.now(); assignment.rejection_reason = s.validated_data['rejection_reason']
         assignment.save(update_fields=['status', 'rejected_by', 'rejected_at', 'rejection_reason'])
         emp = assignment.employee

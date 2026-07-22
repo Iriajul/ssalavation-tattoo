@@ -15,7 +15,7 @@ status / overdue / performance code path keeps working unchanged.
 from datetime import date, timedelta
 import calendar
 
-from django.db.models import Count
+from django.db.models import Count, Q
 from dateutil.rrule import rrule, DAILY, WEEKLY
 from dateutil.relativedelta import relativedelta
 
@@ -238,11 +238,13 @@ def series_meta(template_ids, today=None):
       { template_id: { 'total_occurrences': int, 'status_counts': {...} } }
 
     - total_occurrences: every occurrence in the series (full schedule).
-    - status_counts: only occurrences that have actually come *due*
-      (due_date <= today). Future scheduled occurrences are NOT counted, so a
-      recurring task doesn't show e.g. "35 pending" for tasks not yet due.
+    - status_counts: occurrences already due (due_date <= today) PLUS each
+      template's single next upcoming occurrence. This keeps the counts from
+      flooding with the whole future series (e.g. "26 pending"), while still
+      surfacing a brand-new recurring task whose first occurrence is in the
+      future — it shows pending: 1 instead of 0.
 
-    Two queries total, regardless of how many templates.
+    Three queries total, regardless of how many templates.
     """
     from .models import Task, TaskAssignment
 
@@ -258,9 +260,21 @@ def series_meta(template_ids, today=None):
     ):
         meta.setdefault(row['template_id'], {})['total_occurrences'] = row['n']
 
+    # The single next upcoming occurrence id per template (Postgres DISTINCT ON).
+    next_upcoming_ids = list(
+        Task.objects
+        .filter(template_id__in=template_ids, due_date__gt=today)
+        .order_by('template_id', 'due_date')
+        .distinct('template_id')
+        .values_list('id', flat=True)
+    )
+
+    # Count assignments that are either already due, or belong to that one next
+    # upcoming occurrence.
     for row in (
         TaskAssignment.objects
-        .filter(task__template_id__in=template_ids, task__due_date__lte=today)
+        .filter(task__template_id__in=template_ids)
+        .filter(Q(task__due_date__lte=today) | Q(task_id__in=next_upcoming_ids))
         .values('task__template_id', 'status').annotate(n=Count('id'))
     ):
         d = meta.setdefault(row['task__template_id'], {})

@@ -54,6 +54,7 @@ So `GET users/` means `GET https://api.salvationhq.com/api/admin/users/`.
 - [Permission summary matrix](#permission-summary-matrix)
 
 ---
+this is the thing that we need
 
 # Auth (all roles)
 

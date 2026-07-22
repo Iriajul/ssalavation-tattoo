@@ -105,7 +105,12 @@ if [[ "\$DEEP_REBUILD" == true ]]; then
     docker compose up -d --build
 else
     echo "  Rebuilding backend image (layer cache makes this fast)..."
-    docker compose up -d --build --force-recreate backend
+    # Build the new image, then reconcile ALL services together. Recreating only
+    # the backend can lose the depends_on healthcheck race against the db mid-
+    # restart ("dependency db failed to start"); a full 'up -d' brings db + backend
+    # up in order. The db keeps its data volume, so it is only recreated if needed.
+    docker compose build backend
+    docker compose up -d
 fi
 
 echo "  Waiting for backend to be ready..."

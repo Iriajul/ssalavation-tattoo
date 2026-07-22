@@ -1333,6 +1333,8 @@ class DistrictManagerEmployeeAttendanceDetailView(APIView):
             )
             att_map = {a.date: a for a in att_qs}
 
+            today = timezone.localdate()
+
             daily_records = []
             current = start_date
             while current <= end_date:
@@ -1342,6 +1344,10 @@ class DistrictManagerEmployeeAttendanceDetailView(APIView):
 
                 if a:
                     day_status = a.status
+                elif current > today:
+                    # Future day — nobody can be absent for a day that hasn't
+                    # happened yet. Stays neutral and never counts as absent.
+                    day_status = 'upcoming'
                 elif is_work_day:
                     day_status = 'absent'
                 else:

@@ -54,7 +54,6 @@ So `GET users/` means `GET https://api.salvationhq.com/api/admin/users/`.
 - [Permission summary matrix](#permission-summary-matrix)
 
 ---
-this is the thing that we need
 
 # Auth (all roles)
 
@@ -217,7 +216,7 @@ Any subset of the create body. **200** → updated location.
 **200**
 ```json
 {
-  "stats": { "total": 40, "pending": 30, "approved": 6, "rejected": 4 },
+  "stats": { "awaiting_review": 3, "overdue": 3, "completed": 6, "rejected": 4 },
   "count": 40, "next": "…?page=2", "previous": null,
   "results": [
     {

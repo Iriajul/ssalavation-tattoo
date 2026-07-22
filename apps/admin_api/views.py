@@ -960,7 +960,7 @@ def get_performance_status(completion_rate):
     return 'At Risk'
 
 class PerformanceAnalyticsView(APIView):
-    permission_classes = [IsSuperAdmin]
+    permission_classes = [IsSuperAdminOrDistrictManager]
 
     def get(self, request):
         period = normalize_period(request.query_params.get('period'), 'today')

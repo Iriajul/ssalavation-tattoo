@@ -21,13 +21,15 @@ from .serializers import (
     TaskListSerializer,
     AdminChangePasswordSerializer,
     WorkScheduleSerializer,
+    assignable_roles_for,
 )
 from django.db.models import Prefetch
 
 User = get_user_model()
 
 # FIX 2: centralized role constants
-EMPLOYEE_ROLES   = ['tattoo_artist', 'body_piercer', 'staff']
+# Managers are employees too (see apps/admin_api/views.py).
+EMPLOYEE_ROLES   = ['tattoo_artist', 'body_piercer', 'staff', 'branch_manager', 'district_manager']
 ASSIGNABLE_ROLES = ['tattoo_artist', 'body_piercer', 'staff']
 
 
@@ -407,7 +409,7 @@ class DistrictManagerTaskView(APIView):
         if not isinstance(raw, list):
             data['assigned_to'] = [raw] if raw is not None else []
 
-        serializer = TaskCreateSerializer(data=data)
+        serializer = TaskCreateSerializer(data=data, context={'actor': request.user})
         serializer.is_valid(raise_exception=True)
         task = serializer.save(created_by=request.user)
 
@@ -453,7 +455,7 @@ class DistrictManagerTaskDetailView(APIView):
         if raw is not None:
             data['assigned_to'] = raw if isinstance(raw, list) else [raw]
 
-        serializer = TaskUpdateSerializer(data=data, context={'task': task, 'allowed_location_ids': loc_ids})
+        serializer = TaskUpdateSerializer(data=data, context={'task': task, 'allowed_location_ids': loc_ids, 'actor': request.user})
         serializer.is_valid(raise_exception=True)
         vd = serializer.validated_data
 
@@ -483,9 +485,12 @@ class DistrictManagerLocationEmployeesView(APIView):
         if not location:
             return Response({'error': 'Location not found.'}, status=status.HTTP_404_NOT_FOUND)
 
+        # Include the manager roles this caller may assign to (branch managers),
+        # so they show up in the assignee picker alongside employees.
         employees = (
             User.objects
-            .filter(location=location, role__in=ASSIGNABLE_ROLES, is_active=True)
+            .filter(location=location, role__in=assignable_roles_for(request.user), is_active=True)
+            .exclude(pk=request.user.pk)
             .prefetch_related('work_schedules')
             .order_by('first_name')
         )

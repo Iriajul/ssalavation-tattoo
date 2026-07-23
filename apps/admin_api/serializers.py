@@ -13,6 +13,32 @@ User = get_user_model()
 SCHEDULE_ROLES = ['tattoo_artist', 'body_piercer', 'staff', 'branch_manager', 'district_manager']
 ASSIGNABLE_ROLES = ['tattoo_artist', 'body_piercer', 'staff']
 
+# Managers can also be given tasks (they submit via the mobile app like staff),
+# but only from above in the chain of command:
+#   super_admin      -> district managers, branch managers, employees
+#   district_manager -> branch managers, employees
+#   branch_manager   -> employees only
+ASSIGNABLE_ROLES_BY_ACTOR = {
+    'super_admin':      ASSIGNABLE_ROLES + ['district_manager', 'branch_manager'],
+    'district_manager': ASSIGNABLE_ROLES + ['branch_manager'],
+    'branch_manager':   ASSIGNABLE_ROLES,
+}
+
+
+def assignable_roles_for(actor):
+    """Roles `actor` is allowed to assign a task to."""
+    role = getattr(actor, 'role', None)
+    return ASSIGNABLE_ROLES_BY_ACTOR.get(role, ASSIGNABLE_ROLES)
+
+
+def assignable_roles_label(roles):
+    """Human-readable list for validation messages."""
+    names = {
+        'tattoo_artist': 'Tattoo Artist', 'body_piercer': 'Body Piercer', 'staff': 'Staff',
+        'branch_manager': 'Branch Manager', 'district_manager': 'District Manager',
+    }
+    return ', '.join(names.get(r, r) for r in roles)
+
 # ================================================================
 # AUTH SERIALIZERS
 # ================================================================
@@ -633,9 +659,10 @@ class TaskCreateSerializer(RecurringTaskMixin, serializers.Serializer):
         if errors:
             raise serializers.ValidationError({'assigned_to': errors})
 
+        allowed_roles = assignable_roles_for(self.context.get('actor'))
         for emp in employees:
-            if emp.role not in ASSIGNABLE_ROLES:
-                errors.append(f"{emp.get_full_name()} is not a Tattoo Artist, Body Piercer, or Staff.")
+            if emp.role not in allowed_roles:
+                errors.append(f"{emp.get_full_name()} cannot be assigned tasks. Allowed: {assignable_roles_label(allowed_roles)}.")
             elif location and emp.location != location:
                 errors.append(f"{emp.get_full_name()} does not belong to the selected location.")
         if errors:
@@ -708,9 +735,10 @@ class TaskUpdateSerializer(serializers.Serializer):
             for eid in emp_ids:
                 if eid not in found_ids:
                     errors.append(f"Employee {eid} not found or inactive.")
+            allowed_roles = assignable_roles_for(self.context.get('actor'))
             for emp in employees:
-                if emp.role not in ASSIGNABLE_ROLES:
-                    errors.append(f"{emp.get_full_name()} is not a Tattoo Artist, Body Piercer, or Staff.")
+                if emp.role not in allowed_roles:
+                    errors.append(f"{emp.get_full_name()} cannot be assigned tasks. Allowed: {assignable_roles_label(allowed_roles)}.")
                 # District (allowed_location_ids) without a location change: employees
                 # may come from any of the district's locations. Otherwise they must
                 # match the effective (new or current) location.
@@ -1037,6 +1065,7 @@ class BranchManagerTaskCreateSerializer(RecurringTaskMixin, serializers.Serializ
         for eid in emp_ids:
             if eid not in found_ids:
                 errors.append(f"Employee {eid} not found or inactive.")
+        # Branch managers assign to their own employees only (no manager-to-manager).
         for emp in employees:
             if emp.role not in ASSIGNABLE_ROLES:
                 errors.append(f"{emp.get_full_name()} is not a Tattoo Artist, Body Piercer, or Staff.")

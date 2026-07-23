@@ -33,7 +33,8 @@ from .serializers import (
     AppUserSerializer,
 )
 
-EMPLOYEE_ROLES = ['tattoo_artist', 'body_piercer', 'staff']
+# Managers are employees too (see apps/admin_api/views.py).
+EMPLOYEE_ROLES = ['tattoo_artist', 'body_piercer', 'staff', 'branch_manager', 'district_manager']
 
 User = get_user_model()
 
@@ -290,9 +291,11 @@ class AppAttendanceView(APIView):
         token = request.data.get('token')
 
         # ── Role check ────────────────────────────────────────────
-        if user.role not in EMPLOYEE_ROLES:
+        # Branch/district managers use the app like employees, so they clock
+        # in/out with the QR too. Super admins and kiosk accounts do not.
+        if not user.is_app_user:
             return Response(
-                {'error': 'Only employees can check in/out.'},
+                {'error': 'Only employees and managers can check in/out.'},
                 status=status.HTTP_403_FORBIDDEN
             )
 
@@ -325,7 +328,9 @@ class AppAttendanceView(APIView):
             )
 
         # ── Employee must belong to this location ─────────────────
-        if user.location != qr_session.location:
+        # District managers work across every location, so they may clock in at
+        # whichever branch they are visiting. Everyone else is tied to their own.
+        if user.role != 'district_manager' and user.location != qr_session.location:
             return Response(
                 {'error': 'This QR code is not for your location.'},
                 status=status.HTTP_403_FORBIDDEN
@@ -866,7 +871,9 @@ class AppRecentActivityView(APIView):
             task_title = f"'{log.task.title}'" if log.task else ''
 
             if log.action == 'task_completed':
-                message = f"You submitted '{log.task.title}' for review"
+                # task_title is already null-safe — ActivityLog.task is SET_NULL,
+                # so a deleted task leaves log.task None.
+                message = f"You submitted {task_title} for review".replace('  ', ' ')
                 dot     = 'yellow'
             elif log.action == 'task_approved':
                 message = f"Task {task_title} was approved"

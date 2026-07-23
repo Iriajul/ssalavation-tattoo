@@ -76,7 +76,11 @@ class User(AbstractUser):
 
     @property
     def is_app_user(self):
-        return self.role in ['tattoo_artist', 'body_piercer', 'staff']
+        # Managers also use the mobile app (they can be assigned tasks there).
+        return self.role in [
+            'tattoo_artist', 'body_piercer', 'staff',
+            'branch_manager', 'district_manager',
+        ]
 
     @property
     def needs_schedule(self):

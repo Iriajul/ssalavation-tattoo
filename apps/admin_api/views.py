@@ -30,6 +30,7 @@ from .utils import check_file_size, normalize_period
 from .serializers import (
     ALLOWED_RECIPIENT_ROLES,
     EMPLOYEE_NOTIFICATION_ROLES,
+    assignable_roles_for,
     AdminChangePasswordSerializer,
     AdminProfileSerializer,
     AttendanceSerializer,
@@ -71,7 +72,10 @@ from .serializers import (
 
 User = get_user_model()
 
-EMPLOYEE_ROLES   = ['tattoo_artist', 'body_piercer', 'staff']
+# Everyone who works at a shop counts as an employee for attendance, dashboards
+# and reports — branch and district managers included. Only super_admin (and the
+# clock_in_user kiosk) sit outside this.
+EMPLOYEE_ROLES   = ['tattoo_artist', 'body_piercer', 'staff', 'branch_manager', 'district_manager']
 ASSIGNABLE_ROLES = ['tattoo_artist', 'body_piercer', 'staff']
 
 # ================================================================
@@ -505,7 +509,7 @@ class TaskViewSet(viewsets.ModelViewSet):
         if not isinstance(raw, list):
             data['assigned_to'] = [raw] if raw is not None else []
 
-        serializer = TaskCreateSerializer(data=data)
+        serializer = TaskCreateSerializer(data=data, context={'actor': request.user})
         serializer.is_valid(raise_exception=True)
         task = serializer.save(created_by=request.user)
 
@@ -539,7 +543,7 @@ class TaskViewSet(viewsets.ModelViewSet):
             emp_ids = raw if isinstance(raw, list) else [raw]
             data['assigned_to'] = emp_ids
 
-        serializer = TaskUpdateSerializer(data=data, context={'task': task})
+        serializer = TaskUpdateSerializer(data=data, context={'task': task, 'actor': request.user})
         serializer.is_valid(raise_exception=True)
         vd = serializer.validated_data
 
@@ -676,11 +680,13 @@ class LocationEmployeesView(APIView):
                 status=status.HTTP_404_NOT_FOUND
             )
 
+        # Include the manager roles the caller may assign to, so they appear in
+        # the assignee picker alongside employees.
         employees = User.objects.filter(
             location  = location,
-            role__in  = ASSIGNABLE_ROLES,
+            role__in  = assignable_roles_for(request.user),
             is_active = True
-        ).prefetch_related('work_schedules')
+        ).exclude(pk=request.user.pk).prefetch_related('work_schedules')
 
         serializer = LocationEmployeeSerializer(employees, many=True)
         return Response({
@@ -2484,7 +2490,7 @@ class BranchManagerTaskViewSet(viewsets.ModelViewSet):
         if raw is not None:
             data['assigned_to'] = raw if isinstance(raw, list) else [raw]
 
-        serializer = TaskUpdateSerializer(data=data, context={'task': task})
+        serializer = TaskUpdateSerializer(data=data, context={'task': task, 'actor': request.user})
         serializer.is_valid(raise_exception=True)
         vd = serializer.validated_data
 

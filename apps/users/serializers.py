@@ -5,8 +5,10 @@ from django.contrib.auth import get_user_model
 
 User = get_user_model()
 
-# App roles allowed to login to mobile app
-APP_ROLES = ['tattoo_artist', 'body_piercer', 'staff']
+# App roles allowed to login to mobile app.
+# Branch/district managers can also be assigned tasks, so they log in here to
+# view and submit them exactly like employees do.
+APP_ROLES = ['tattoo_artist', 'body_piercer', 'staff', 'branch_manager', 'district_manager']
 
 
 # ================================================================

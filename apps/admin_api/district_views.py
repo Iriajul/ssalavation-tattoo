@@ -533,9 +533,12 @@ class DistrictManagerEmployeesView(APIView):
         if location_filter and not locations.filter(id=location_filter).exists():
             return Response({'error': 'Invalid location.'}, status=status.HTTP_400_BAD_REQUEST)
 
+        # Include the manager roles this caller may assign to (branch managers),
+        # so they appear in the assignee picker alongside employees.
         emp_qs = (
             User.objects
-            .filter(location_id__in=loc_ids, role__in=ASSIGNABLE_ROLES, is_active=True)
+            .filter(location_id__in=loc_ids, role__in=assignable_roles_for(request.user), is_active=True)
+            .exclude(pk=request.user.pk)
             .select_related('location')
             .prefetch_related('work_schedules')
             .order_by('first_name', 'last_name')

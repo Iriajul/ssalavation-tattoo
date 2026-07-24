@@ -170,6 +170,9 @@ class AppNotification(models.Model):
     title      = models.CharField(max_length=255)
     message    = models.TextField()
     is_read    = models.BooleanField(default=False)
+    # Mirrors AdminNotification.image so a picture attached in the dashboard
+    # actually reaches the app, not just the web list.
+    image      = models.ImageField(upload_to='admin_notifications/', blank=True, null=True)
     task       = models.ForeignKey(
         'admin_api.Task',
         on_delete    = models.SET_NULL,

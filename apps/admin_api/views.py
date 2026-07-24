@@ -2790,7 +2790,6 @@ class AdminNotificationViewSet(viewsets.ViewSet):
 
     def create(self, request):
         import json
-        EMPLOYEE_ROLES = ['tattoo_artist', 'body_piercer', 'staff']
 
         data = request.data.copy()
         recipients_raw = data.get('recipients', '')
@@ -2811,6 +2810,19 @@ class AdminNotificationViewSet(viewsets.ViewSet):
         employee_recipients = [r for r in all_recipients if r.role in EMPLOYEE_ROLES]
         admin_recipients    = [r for r in all_recipients if r.role not in EMPLOYEE_ROLES]
 
+        # create admin notification for all recipients (so sent view shows everyone)
+        notification = AdminNotification.objects.create(
+            sender  = request.user,
+            message = message,
+            image   = image,
+        )
+
+        # FCM needs an absolute URL, so derive it from the saved file.
+        image_url = (
+            request.build_absolute_uri(notification.image.url)
+            if notification.image else None
+        )
+
         # send to app for employees
         if employee_recipients:
             AppNotification.objects.bulk_create([
@@ -2819,6 +2831,7 @@ class AdminNotificationViewSet(viewsets.ViewSet):
                     notif_type = AppNotification.NotifType.SYSTEM,
                     title      = f"Message from {sender_name}",
                     message    = message,
+                    image      = notification.image.name or None,
                 )
                 for emp in employee_recipients
             ])
@@ -2829,14 +2842,8 @@ class AdminNotificationViewSet(viewsets.ViewSet):
                 f"Message from {sender_name}",
                 message,
                 data={'notif_type': 'system'},
+                image_url=image_url,
             )
-
-        # create admin notification for all recipients (so sent view shows everyone)
-        notification = AdminNotification.objects.create(
-            sender  = request.user,
-            message = message,
-            image   = image,
-        )
         notification.recipients.set(all_recipients)
         notification = AdminNotification.objects.prefetch_related('recipients').get(pk=notification.pk)
         return Response(

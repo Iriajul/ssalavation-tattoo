@@ -994,6 +994,7 @@ class AppNotificationView(APIView):
                 'message':  n.message,
                 'is_read':  n.is_read,
                 'task_id':  n.task.id if n.task else None,
+                'image_url': request.build_absolute_uri(n.image.url) if n.image else None,
                 'time_ago': self._time_ago(n.created_at, now),
             }
             for n in notifs

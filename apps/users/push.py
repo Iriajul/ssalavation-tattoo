@@ -46,7 +46,7 @@ def _get_app():
     return _app
 
 
-def send_push(user, title, body, data=None):
+def send_push(user, title, body, data=None, image_url=None):
     """Send an FCM push to all of `user`'s device tokens. No-op if unconfigured."""
     if _get_app() is None:
         return
@@ -65,7 +65,7 @@ def send_push(user, title, body, data=None):
     for tk in tokens:
         try:
             messaging.send(messaging.Message(
-                notification=messaging.Notification(title=title, body=body),
+                notification=messaging.Notification(title=title, body=body, image=image_url),
                 data=payload,
                 token=tk,
             ))
@@ -78,7 +78,7 @@ def send_push(user, title, body, data=None):
                 logger.warning('Push send failed: %s', exc)
 
 
-def send_push_to_users(users, title, body, data=None):
+def send_push_to_users(users, title, body, data=None, image_url=None):
     """Send the same push to multiple users."""
     for user in users:
-        send_push(user, title, body, data)
+        send_push(user, title, body, data, image_url)

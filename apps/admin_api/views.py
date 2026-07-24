@@ -78,6 +78,121 @@ User = get_user_model()
 EMPLOYEE_ROLES   = ['tattoo_artist', 'body_piercer', 'staff', 'branch_manager', 'district_manager']
 ASSIGNABLE_ROLES = ['tattoo_artist', 'body_piercer', 'staff']
 
+# ── Firing authority: who each actor may fire ────────────────────────────────
+#   super_admin      → anyone (managers included)
+#   district_manager → employees only, anywhere in the (single) district
+#   branch_manager   → employees at their OWN location only
+# Managers can never fire another manager; only super_admin can.
+FIREABLE_ROLES = ['tattoo_artist', 'body_piercer', 'staff']
+
+
+def perform_fire(actor, assignment):
+    """
+    Deactivate the assignment's employee, mark the assignment fired, email the
+    termination notice, and log it. Callers must have already checked
+    can_fire_target and that the assignment is overdue and not yet fired.
+    Returns the fired user.
+    """
+    user = assignment.employee
+
+    assignment.is_fired = True
+    assignment.save(update_fields=['is_fired'])
+
+    user.is_active    = False
+    user.is_suspended = True
+    user.save(update_fields=['is_active', 'is_suspended'])
+
+    return user
+
+
+def do_fire_flow(request, task, actor):
+    """
+    Shared fire-user handler for every role. `task` must already be scoped to
+    what `actor` is allowed to see. Returns a DRF Response.
+    """
+    s = FireUserSerializer(data=request.data)
+    s.is_valid(raise_exception=True)
+
+    try:
+        assignment = task.assignments.select_related('employee').get(
+            pk=s.validated_data['assignment_id']
+        )
+    except TaskAssignment.DoesNotExist:
+        return Response({"error": "Assignment not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    if assignment.status != 'overdue':
+        return Response({"error": "You can only fire an employee for an overdue task."}, status=status.HTTP_400_BAD_REQUEST)
+    if assignment.is_fired:
+        return Response({"error": "This employee has already been fired for this task."}, status=status.HTTP_400_BAD_REQUEST)
+
+    user            = assignment.employee
+    allowed, reason = can_fire_target(actor, user)
+    if not allowed:
+        return Response({"error": reason}, status=status.HTTP_403_FORBIDDEN)
+
+    fire_reason = s.validated_data['fire_reason']
+    perform_fire(actor, assignment)
+
+    send_html_email(
+        subject  = "Employment Termination — Salvation Tattoo Lounge",
+        template = "emails/termination.html",
+        context  = {'full_name': user.get_full_name(), 'reason': fire_reason},
+        to       = user.email,
+    )
+    ActivityLog.objects.create(
+        action='user_suspended', actor=actor, target_user=user,
+        message=f'{user.get_full_name()} was fired. Reason: {fire_reason}',
+    )
+
+    return Response({
+        'message': f'{user.get_full_name()} has been fired and notified by email.',
+        'employee': {'id': user.id, 'name': user.get_full_name(), 'email': user.email},
+        'fire_reason': fire_reason,
+    }, status=status.HTTP_200_OK)
+
+
+def fire_info_payload(task, actor):
+    """fire-info body, showing only assignments `actor` is allowed to fire."""
+    overdue = task.assignments.filter(status='overdue', is_fired=False).select_related('employee')
+    return {
+        'task_id':    task.id,
+        'task_title': task.title,
+        'fireable': [
+            {'assignment_id': a.id, 'employee_name': a.employee.get_full_name(),
+             'email': a.employee.email, 'role': a.employee.get_role_display()}
+            for a in overdue
+            if can_fire_target(actor, a.employee)[0]
+        ],
+    }
+
+
+def can_fire_target(actor, target):
+    """Return (allowed: bool, reason: str). reason is '' when allowed."""
+    if actor.role == 'super_admin':
+        return True, ''
+
+    if target.role not in FIREABLE_ROLES:
+        # blocks DM→branch_manager, DM→DM, BM→DM, BM→branch_manager
+        return False, "You do not have permission to fire this user."
+
+    if actor.role == 'district_manager':
+        # District oversees all active locations in this data model — matches the
+        # scope used by the DM's task/attendance views.
+        active_ids = set(
+            Location.objects.filter(status='active').values_list('id', flat=True)
+        )
+        if target.location_id not in active_ids:
+            return False, "This employee is outside your district."
+        return True, ''
+
+    if actor.role == 'branch_manager':
+        if target.location_id != actor.location_id:
+            return False, "You can only fire employees at your own location."
+        return True, ''
+
+    return False, "You do not have permission to fire this user."
+
+
 # ================================================================
 # HELPERS
 # ================================================================
@@ -611,57 +726,11 @@ class TaskViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['get'], url_path='fire-info')
     def fire_info(self, request, pk=None):
-        task = self.get_object()
-        overdue_assignments = task.assignments.filter(status='overdue', is_fired=False).select_related('employee')
-        return Response({
-            'task_id':    task.id,
-            'task_title': task.title,
-            'fireable':   [
-                {'assignment_id': a.id, 'employee_name': a.employee.get_full_name(), 'email': a.employee.email, 'role': a.employee.get_role_display()}
-                for a in overdue_assignments
-            ],
-        }, status=status.HTTP_200_OK)
+        return Response(fire_info_payload(self.get_object(), request.user), status=status.HTTP_200_OK)
 
     @action(detail=True, methods=['post'], url_path='fire-user')
     def fire_user(self, request, pk=None):
-        task = self.get_object()
-        s    = FireUserSerializer(data=request.data)
-        s.is_valid(raise_exception=True)
-
-        try:
-            assignment = task.assignments.select_related('employee').get(pk=s.validated_data['assignment_id'])
-        except TaskAssignment.DoesNotExist:
-            return Response({"error": "Assignment not found."}, status=status.HTTP_404_NOT_FOUND)
-
-        if assignment.status != 'overdue':
-            return Response({"error": "You can only fire an employee for an overdue task."}, status=status.HTTP_400_BAD_REQUEST)
-        if assignment.is_fired:
-            return Response({"error": "This employee has already been fired for this task."}, status=status.HTTP_400_BAD_REQUEST)
-
-        fire_reason = s.validated_data['fire_reason']
-        user        = assignment.employee
-
-        assignment.is_fired = True
-        assignment.save(update_fields=['is_fired'])
-
-        user.is_active    = False
-        user.is_suspended = True
-        user.save(update_fields=['is_active', 'is_suspended'])
-
-        send_html_email(
-            subject  = "Employment Termination — Salvation Tattoo Lounge",
-            template = "emails/termination.html",
-            context  = {'full_name': user.get_full_name(), 'reason': fire_reason},
-            to       = user.email,
-        )
-
-        ActivityLog.objects.create(action='user_suspended', actor=request.user, target_user=user, message=f'{user.get_full_name()} was fired. Reason: {fire_reason}')
-
-        return Response({
-            'message': f'{user.get_full_name()} has been fired and notified by email.',
-            'employee': {'id': user.id, 'name': user.get_full_name(), 'email': user.email},
-            'fire_reason': fire_reason,
-        }, status=status.HTTP_200_OK)
+        return do_fire_flow(request, self.get_object(), request.user)
 
 
 # ================================================================
@@ -2541,6 +2610,17 @@ class BranchManagerTaskViewSet(viewsets.ModelViewSet):
         ActivityLog.objects.create(action='task_rejected', actor=request.user, task=task, target_user=emp, message=f'Task "{task.title}" rejected — {s.validated_data["rejection_reason"]}')
         AppNotification.objects.create(recipient=emp, notif_type='task_rejected', title='Task Needs Revision', message=f"'{task.title}' was rejected. {s.validated_data['rejection_reason']}", task=task)
         return Response({'message': 'Task rejected.', 'task': TaskDetailSerializer(task).data}, status=status.HTTP_200_OK)
+
+    # get_queryset already scopes to the manager's own location, so get_object()
+    # can't reach another branch's task. can_fire_target then blocks any manager
+    # target and any employee outside this location.
+    @action(detail=True, methods=['get'], url_path='fire-info')
+    def fire_info(self, request, pk=None):
+        return Response(fire_info_payload(self.get_object(), request.user), status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'], url_path='fire-user')
+    def fire_user(self, request, pk=None):
+        return do_fire_flow(request, self.get_object(), request.user)
 
 
 class BranchManagerLocationEmployeesView(APIView):

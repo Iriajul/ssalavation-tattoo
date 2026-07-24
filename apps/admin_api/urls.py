@@ -1,7 +1,7 @@
 # apps/admin_api/urls.py
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from .district_views import DistrictManagerDashboardView, DistrictManagerLocationsView, DistrictManagerReportsView, DistrictManagerTaskView, DistrictManagerTaskDetailView, DistrictManagerLocationEmployeesView, DistrictManagerEmployeesView, DistrictManagerUserAttendanceListView, DistrictManagerVerificationActionView, DistrictManagerVerificationView,DistrictManagerProfileView, DistrictManagerChangePasswordView,DistrictManagerEmployeePerformanceView,DistrictManagerEmployeeAttendanceDetailView, DistrictManagerPerformanceDashboardView, BranchManagerUserAttendanceListView, BranchManagerEmployeeAttendanceDetailView
+from .district_views import DistrictManagerDashboardView, DistrictManagerLocationsView, DistrictManagerReportsView, DistrictManagerTaskView, DistrictManagerTaskDetailView, DistrictManagerLocationEmployeesView, DistrictManagerEmployeesView, DistrictManagerUserAttendanceListView, DistrictManagerVerificationActionView, DistrictManagerVerificationView,DistrictManagerProfileView, DistrictManagerChangePasswordView,DistrictManagerEmployeePerformanceView,DistrictManagerEmployeeAttendanceDetailView, DistrictManagerPerformanceDashboardView, BranchManagerUserAttendanceListView, BranchManagerEmployeeAttendanceDetailView, DistrictManagerFireInfoView, DistrictManagerFireUserView
 from .views import (
     AdminChangePasswordView,
     AdminLoginView,
@@ -92,6 +92,8 @@ urlpatterns = [
     path('district-manager/locations/<int:pk>/employees/',     DistrictManagerLocationEmployeesView.as_view(), name='district-manager-location-employees'),
     path('district-manager/verifications/',DistrictManagerVerificationView.as_view(),name='district-manager-verifications'),
     path('district-manager/verifications/<int:pk>/<str:action>/',DistrictManagerVerificationActionView.as_view(),name='district-manager-verification-action'),
+    path('district-manager/tasks/<int:pk>/fire-info/', DistrictManagerFireInfoView.as_view(), name='district-manager-fire-info'),
+    path('district-manager/tasks/<int:pk>/fire-user/', DistrictManagerFireUserView.as_view(), name='district-manager-fire-user'),
     path('district/reports/', DistrictManagerReportsView.as_view(), name='district-reports'),
     path('district-manager/profile/',          DistrictManagerProfileView.as_view(),         name='district-manager-profile'),
     path('district-manager/profile/password/', DistrictManagerChangePasswordView.as_view(),  name='district-manager-change-password'),

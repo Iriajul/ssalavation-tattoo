@@ -1453,3 +1453,33 @@ class BranchManagerEmployeeAttendanceDetailView(DistrictManagerEmployeeAttendanc
 
     def get_scope_location_ids(self, request):
         return [request.user.location_id] if request.user.location_id else []
+
+
+# ── District Manager firing ──────────────────────────────────────────────────
+# Shares the exact fire mechanics + authority rules used by the super-admin and
+# branch-manager endpoints. Task is scoped to active locations; can_fire_target
+# then blocks any manager target and any employee outside the district.
+class DistrictManagerFireInfoView(APIView):
+    permission_classes = [IsDistrictManager]
+
+    def get(self, request, pk):
+        from .views import fire_info_payload
+        loc_ids = list(get_active_locations().values_list('id', flat=True))
+        try:
+            task = Task.objects.get(pk=pk, location_id__in=loc_ids)
+        except Task.DoesNotExist:
+            return Response({'error': 'Task not found.'}, status=status.HTTP_404_NOT_FOUND)
+        return Response(fire_info_payload(task, request.user), status=status.HTTP_200_OK)
+
+
+class DistrictManagerFireUserView(APIView):
+    permission_classes = [IsDistrictManager]
+
+    def post(self, request, pk):
+        from .views import do_fire_flow
+        loc_ids = list(get_active_locations().values_list('id', flat=True))
+        try:
+            task = Task.objects.get(pk=pk, location_id__in=loc_ids)
+        except Task.DoesNotExist:
+            return Response({'error': 'Task not found.'}, status=status.HTTP_404_NOT_FOUND)
+        return do_fire_flow(request, task, request.user)

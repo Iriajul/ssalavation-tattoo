@@ -142,6 +142,12 @@ class AppInstructionDetailSerializer(serializers.ModelSerializer):
         ]
 
 
+# Statuses an employee may still submit from. `overdue` is included so a late
+# task can still be completed — it stays flagged overdue for managers either way.
+# Single source of truth: AppTaskViewSet.complete enforces the same tuple.
+SUBMITTABLE_STATUSES = ('pending', 'rejected', 'overdue')
+
+
 class AppTaskListSerializer(serializers.ModelSerializer):
     """Serializes a TaskAssignment for the employee's task list"""
     assignment_id    = serializers.IntegerField(source='id', read_only=True)
@@ -154,6 +160,7 @@ class AppTaskListSerializer(serializers.ModelSerializer):
     frequency        = serializers.CharField(source='task.frequency', read_only=True)
     assigned_by_name = serializers.SerializerMethodField()
     assigned_by_role = serializers.SerializerMethodField()
+    can_submit       = serializers.SerializerMethodField()
 
     class Meta:
         model  = TaskAssignment
@@ -162,7 +169,11 @@ class AppTaskListSerializer(serializers.ModelSerializer):
             'assigned_by_name', 'assigned_by_role',
             'due_date', 'due_date_display',
             'requires_photo', 'is_recurring', 'frequency',
+            'can_submit', 'rejection_reason',
         ]
+
+    def get_can_submit(self, obj):
+        return obj.status in SUBMITTABLE_STATUSES
 
     def get_assigned_by_name(self, obj):
         cb = obj.task.created_by
@@ -202,6 +213,7 @@ class AppTaskDetailSerializer(serializers.ModelSerializer):
     frequency        = serializers.CharField(source='task.frequency', read_only=True)
     assigned_by_name = serializers.SerializerMethodField()
     assigned_by_role = serializers.SerializerMethodField()
+    can_submit       = serializers.SerializerMethodField()
 
     class Meta:
         model  = TaskAssignment
@@ -211,8 +223,11 @@ class AppTaskDetailSerializer(serializers.ModelSerializer):
             'due_date', 'due_date_display',
             'requires_photo', 'photo_url',
             'is_recurring', 'frequency',
-            'completed_at', 'rejection_reason',
+            'completed_at', 'rejection_reason', 'can_submit',
         ]
+
+    def get_can_submit(self, obj):
+        return obj.status in SUBMITTABLE_STATUSES
 
     def get_assigned_by_name(self, obj):
         cb = obj.task.created_by

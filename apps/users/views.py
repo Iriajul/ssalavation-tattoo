@@ -21,6 +21,7 @@ from .serializers import (
     AppLoginSerializer,
     AppTaskDetailSerializer,
     AppTaskListSerializer,
+    SUBMITTABLE_STATUSES,
     AppTaskHistoryListSerializer,
     AppTaskHistoryDetailSerializer,
     AppInstructionDetailSerializer,
@@ -491,8 +492,8 @@ class AppTaskViewSet(viewsets.ReadOnlyModelViewSet):
         if assignment.employee_id != user.id:
             return Response({"error": "You can only complete tasks assigned to you."}, status=status.HTTP_403_FORBIDDEN)
 
-        if assignment.status not in ['pending', 'rejected']:
-            return Response({"error": "Only pending or rejected tasks can be completed."}, status=status.HTTP_400_BAD_REQUEST)
+        if assignment.status not in SUBMITTABLE_STATUSES:
+            return Response({"error": "This task can no longer be submitted."}, status=status.HTTP_400_BAD_REQUEST)
 
         task = assignment.task
 
@@ -507,9 +508,17 @@ class AppTaskViewSet(viewsets.ReadOnlyModelViewSet):
             result = cloudinary.uploader.upload(photo, folder='task_photos/', chunk_size=6000000)
             assignment.photo_url = result['secure_url']
 
-        assignment.status       = 'awaiting_review'
-        assignment.completed_at = timezone.now()
-        assignment.save(update_fields=['status', 'completed_at', 'photo_url'])
+        # Clear any prior rejection so reviewers don't see a stale reason on
+        # work that is now awaiting a fresh review.
+        assignment.status           = 'awaiting_review'
+        assignment.completed_at     = timezone.now()
+        assignment.rejection_reason = None
+        assignment.rejected_by      = None
+        assignment.rejected_at      = None
+        assignment.save(update_fields=[
+            'status', 'completed_at', 'photo_url',
+            'rejection_reason', 'rejected_by', 'rejected_at',
+        ])
 
         ActivityLog.objects.create(
             action='task_completed', actor=user, task=task, target_user=user,
